@@ -1,0 +1,10 @@
+{
+    "name": "emacs_overleaf",
+    "version": "1.0.0",
+    "main": "index.js",
+    "author": "Valentin Boettcher <hiro@protagon.space>",
+    "license": "MIT",
+    "dependencies": {
+        "socket.io-client": "0.9.17"
+    }
+}

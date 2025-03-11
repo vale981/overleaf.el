@@ -1,0 +1,17 @@
+# Devenv
+.devenv*
+devenv.local.nix
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
+
+overleaf
+*.elc
+node_modules
+
+__pycache__
+auto
+activate

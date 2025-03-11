@@ -1,0 +1,13 @@
+[project]
+name = "emacs-overleaf"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ipdb>=0.13.13",
+    "ipython>=9.0.2",
+    "python-socketio[client]>=5.12.1",
+    "requests>=2.32.3",
+    "socketio-client>=0.7.2",
+]
