@@ -37,3 +37,8 @@
 
 ** Resources
 - https://mbork.pl/2021-05-17_Updating_an_Emacs_buffer_in_real-time
+
+* Tasks
+** NEXT variable naming
+** TODO abstract away with-current-buffer
+** TODO make proper minor mode

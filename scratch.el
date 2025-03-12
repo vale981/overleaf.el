@@ -7,7 +7,7 @@
 (setq inhibit-modification-hooks nil)
 
 (defvar-local overleaf-project-id "6745e47320ed7e0c8f0b1f33")
-(defvar-local overleaf-document-id "6745f5dc2ebf8975b0afe402")
+(defvar-local overleaf-document-id "67d1e0943c6e2e8fec64bd81")
 (defvar-local overleaf-cookies "overleaf_session2=s%3A11Va3hIwoXyaWUF_7geULEBGH5dUHPMr.rgQT%2FXONrClS0o0OyW1p4a4Kormb2v6UyC86jtY%2FMR0; __stripe_mid=ed98fee4-3a6c-4417-bac5-2b0855311097295942; GCLB=CMD37ejsnuTxkAEQAw; __stripe_sid=51ed3af8-6b52-4e05-a7c3-ece7c593bcd5c4a119")
 (defvar-local overleaf-url "https://www.overleaf.com")
 (defvar overleaf--buffer nil)
@@ -20,17 +20,20 @@
 (defvar-local deletion-buffer "")
 (defvar-local send-timer nil)
 (defvar-local message-timer nil)
-(defvar-local overleaf-send-interval 3)
+(defvar-local overleaf-send-interval .5)
 (defvar-local overleaf-message-interval .1)
 (defvar-local send-edit-queue '())
+(defvar-local send-message-queue '())
 (defvar-local edit-in-flight nil)
 (defvar-local vers 0)
 
 
 (defun parse-message (ws message)
   (with-current-buffer overleaf--buffer
-    (pcase-let ((`(,id ,message-raw) (string-split  message ":::")))
+    (pcase-let ((`(,id ,message-raw) (string-split message ":::")))
       (pcase id
+        ("2::"
+         (websocket-send-text ws "2::"))
         ("6"
          (save-match-data
            (when-let* ((doc (progn
@@ -39,21 +42,18 @@
 
                        (version (1- (string-to-number (match-string 2 message))))
                        (overleaf-change t))
-             ;; (message "version %s" version)
              (setq vers version)
              (when doc
-               (with-current-buffer overleaf--buffer
-                 (let ((point (point)))
-                   (save-excursion
-                     (setq-local buffer-read-only nil)
-                     (erase-buffer)
-                     (insert (overleaf--decode-utf8 (string-join (json-parse-string doc) "\n"))))
-                   (goto-char point)))))))
+               (let ((point (point)))
+                 (setq-local buffer-read-only nil)
+                 (erase-buffer)
+                 (insert (overleaf--decode-utf8 (string-join (json-parse-string doc) "\n")))
+                 (goto-char point))))))
         ("5"
          (when message-raw
            (when-let* ((message (json-parse-string message-raw :object-type 'plist :array-type 'list))
                        (name (plist-get message :name)))
-             ;; (message ">>>> Message with name: %s" (plist-get message :name))
+
              (pcase name
                ("otUpdateError"
                 (prin1  (plist-get message :args)))
@@ -68,13 +68,10 @@
                       (overleaf-change t))
                   (when (eq edit-in-flight version)
                     (setq edit-in-flight nil))
-                  (message "aplied")
 
                   (when (> version vers)
-
                     (setq vers version)
                     (dolist (op (plist-get (car  (plist-get message :args)) :op))
-                      (prin1 op)
                       (goto-char (1+ (plist-get op :p)))
                       (when-let* ((insert (plist-get op :i)))
                         (insert (overleaf--decode-utf8 insert)))
@@ -95,10 +92,11 @@
 (defun disconnect ()
   (interactive)
   (when wstest-ws
-    (setq force-close t)
-    (setq send-edit-queue '())
+    (setq-local force-close t)
+    (setq-local send-edit-queue '())
+    (setq-local send-message-queue '())
     (websocket-close wstest-ws)
-    (setq force-close nil)))
+    (setq-local force-close nil)))
 
 (defun on-close (_websocket)
   (let ((overleaf--buffer (gethash (websocket-url _websocket) buffer-ws-table)))
@@ -122,17 +120,20 @@
     (with-current-buffer overleaf--buffer
       (add-hook 'after-change-functions #'on-change nil t)
       (add-hook 'before-change-functions #'before-change nil t)
+
       (setq-local
-       message-timer (progn
-                       (when message-timer
-                         (cancel-timer message-timer))
-                       (run-at-time t overleaf-message-interval #'send-message-from-edit-queue overleaf--buffer)))
+       message-timer
+       (progn
+         (when message-timer
+           (cancel-timer message-timer))
+         (run-at-time t overleaf-message-interval #'send-queued-message overleaf--buffer)))
+
       (setq-local
        send-timer
        (progn
          (when send-timer
            (cancel-timer send-timer))
-         (run-at-time t overleaf-send-interval #'send-change overleaf--buffer))))))
+         (run-with-idle-timer overleaf-send-interval t #'send-message-from-edit-queue overleaf--buffer))))))
 
 (defvar buffer-ws-table (make-hash-table :test #'equal))
 
@@ -147,8 +148,9 @@
 
     (with-current-buffer overleaf--buffer
       (setq-local last-change-type nil)
-      (setq-local deletion-buffer nil)
+      (setq-local deletion-buffer "")
       (setq-local send-edit-queue '())
+      (setq-local send-message-queue '())
       (setq-local edit-in-flight nil)
       (setq-local buffer-read-only t)
       (setq-local vers 0)
@@ -177,100 +179,135 @@ Version: 2024-04-03"
 
 (defun get-hash ()
   (with-current-buffer overleaf--buffer
-    (let ((buff (format "%s" (buffer-substring-no-properties (point-min) (point-max)))))
-      (secure-hash 'sha1 (format "blob %i\x00%s" (length buff) buff)))))
+    (save-restriction
+      (widen)
+      (let ((buff (buffer-string)))
+        (secure-hash 'sha1 (format "blob %i\x00%s" (length buff) buff))))))
 
 
 (defun overleaf--escape-string (str)
   (json-encode str))
 
+(defun edit-queue-message (edit)
+  (setq send-edit-queue (nconc send-edit-queue (list edit))))
 
-(defun edit-queue-message (version msg)
-  (setq send-edit-queue (nconc send-edit-queue `((,version . ,msg))))
-  (setq vers version))
+(defun queue-message (message version)
+  (setq send-message-queue (nconc send-message-queue `((,message . ,version)))))
 
-(defun send-message-from-edit-queue (buffer)
-  (when buffer
-    (let ((overleaf--buffer buffer))
-      (with-current-buffer buffer
-        (when (and wstest-ws (websocket-openp wstest-ws) send-edit-queue (not edit-in-flight))
-          (let ((current (car send-edit-queue)))
-            (setq edit-in-flight (car current))
-            (websocket-send-text wstest-ws (cdr current))
-            (setq send-edit-queue (cdr send-edit-queue))))))))
+(defun send-queued-message (&optional buffer)
+  (let ((overleaf--buffer (or buffer overleaf--buffer)))
+    (when overleaf--buffer
+      (unless edit-in-flight
+        (with-current-buffer overleaf--buffer
+          (when send-message-queue
+            (when-let* ((message (car send-message-queue)))
+              (setq-local edit-in-flight (cdr message))
+              (websocket-send-text wstest-ws (car message))
+              (setq send-message-queue (cdr send-message-queue)))))))))
 
-
-
-(defun send-change (&optional buffer)
+(defun queue-change (&optional buffer)
   (let ((overleaf--buffer (or buffer overleaf--buffer)))
     (when overleaf--buffer
       (with-current-buffer overleaf--buffer
-        (when (websocket-openp wstest-ws)
-          ;; (message "======> %s" last-change-type)
+        (when (and last-change-type (websocket-openp wstest-ws))
+          ;; (message "======> %s %i %i %s" last-change-type last-change-begin (point) deletion-buffer)
           (websocket-send-text wstest-ws
                                (format "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
                                        (current-line) (current-column) overleaf-document-id))
           (pcase last-change-type
             (:d
              (edit-queue-message
-              (1+ vers)
-              (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":[{\"p\":%i,\"d\":%s}],\"meta\": {\"tc\":\"%s\"},\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
-                      sequence-id overleaf-document-id overleaf-document-id (- last-change-begin 1)
-                      (overleaf--escape-string deletion-buffer) (xah-random-string 18) (1+ vers) vers (get-hash))))
+              `(:p ,(- last-change-begin 1) :d ,deletion-buffer)))
             (:i
              (edit-queue-message
-              (1+ vers)
-              (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":[{\"p\":%i,\"i\":%s}],\"meta\": {\"tc\":\"%s\"},\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
-                      sequence-id overleaf-document-id overleaf-document-id (- last-change-begin 1)
-                      (overleaf--escape-string (buffer-substring-no-properties last-change-begin last-change-end)) (xah-random-string 18) (1+ vers) vers (get-hash)))))
-          (setq last-change-type nil)
-          (setq last-change-begin -1)
-          (setq last-change-end -1)
-          (setq sequence-id (1+ sequence-id))
-          (setq deletion-buffer ""))))))
+              `(:p ,(- last-change-begin 1) :i ,(buffer-substring-no-properties last-change-begin last-change-end)))))
+          (setq-local last-change-type nil)
+          (setq-local last-change-begin -1)
+          (setq-local last-change-end -1)
+          (setq-local deletion-buffer ""))))))
 
+(defun send-message-from-edit-queue (buffer)
+  (when buffer
+    (let ((overleaf--buffer buffer))
+      (with-current-buffer buffer
+        (queue-change)
+        (when (and wstest-ws (websocket-openp wstest-ws) send-edit-queue)
+          (queue-message
+           (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":%s,\"meta\": {\"tc\":\"%s\"},\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
+                   sequence-id
+                   overleaf-document-id
+                   overleaf-document-id
+                   (json-encode (apply #'vector send-edit-queue))
+                   (xah-random-string 18) (1+ vers) vers (get-hash))
+           (1+ vers))
+          (setq-local sequence-id (1+ sequence-id))
+          (setq-local vers (1+ vers))
+          (setq send-edit-queue '()))))))
+
+
+(defvar-local overleaf--before-change "")
+(defvar-local overleaf--before-change-begin -1)
 (defun on-change (begin end length)
-  ;; (message "INSERT %i %i %s" begin end length)
+  ;; (message "after %i %i %s %S" begin end length last-change-type)
   (let ((overleaf--buffer (current-buffer)))
     (unless overleaf-change
-      (cond
-       ((and (> end begin) (not (= (- end begin) length)))
-        (unless last-change-type
-          (setq last-change-type :i)
-          (setq last-change-end end)
-          (setq last-change-begin begin))
+      (let ((new (buffer-substring-no-properties begin end)))
+        (unless (and (equal (buffer-substring-no-properties begin end) overleaf--before-change))
+          (let ((empty-before (equal overleaf--before-change ""))
+                (empty-after (equal new "")))
+            ;; (message "%s %s" (json-encode-string overleaf--before-change) (json-encode-string new))
+            (cond
+             (empty-before
+              (let ((begin-matches (= begin last-change-end))
+                    (end-matches (= end last-change-begin)))
+                ;; (message "insert \"%s\"" new)
 
-        (cond
-         ((= begin last-change-end)
-          (setq last-change-end end))
-         ((= end last-change-begin)
-          (setq last-change-begin begin))))))))
+                (if (or (not last-change-type) (eq last-change-type :d) (not (or begin-matches end-matches)))
+                    (progn
+                      (setq last-change-type :i)
+                      (setq last-change-end end)
+                      (setq last-change-begin begin))
+
+                  (setq last-change-type :i)
+
+                  ;; extend
+                  (cond
+                   (begin-matches
+                    (setq last-change-end end))
+                   (end-matches
+                    (setq last-change-begin begin))))))
+             (empty-after
+              ;; (when (and last-change-type (not (eq last-change-type :d)))
+              ;;   (message "NOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO"))
+
+              (unless last-change-type
+                (setq-local last-change-begin overleaf--before-change-begin)
+                (setq-local last-change-end end))
+              (message "%i %i" last-change-begin last-change-end)
+              (setq last-change-type :d)
+              (if (> last-change-begin  overleaf--before-change-begin)
+                  (progn
+                    (setq last-change-begin overleaf--before-change-begin)
+                    (setq-local deletion-buffer (concat overleaf--before-change deletion-buffer)))
+                (setq-local deletion-buffer (concat deletion-buffer overleaf--before-change))
+                (setq last-change-end end))
+              (setq-local last-change-begin overleaf--before-change-begin)))))))))
+
+(defvar-local overleaf--before-change-end -1)
 
 (defun before-change (begin end)
-  (let ((overleaf--buffer (current-buffer)))
-    (unless overleaf-change
-      (cond
-       ;; deletion
-       ((< begin end)
-        ;; (message "DELETE %i %i %s %s" begin end last-change-begin last-change-end)
-        (if (and (eq last-change-type :d) (= end last-change-begin))
-            (progn
-              (setq last-change-begin begin)
-              (setq last-change-end end)
-              (setq deletion-buffer (concat (buffer-substring-no-properties begin end) deletion-buffer)))
-          (when last-change-type
-            (send-change))
-          (setq last-change-type :d)
-          (setq last-change-begin begin)
-          (setq last-change-end end)
-          (setq deletion-buffer (buffer-substring-no-properties begin end)))
-        ;; (message "DELETION BUFFER: %s" deletion-buffer)
-        )
-
-       ;; insertion
-       (t
-        (unless (or (= last-change-end begin) (= last-change-end begin))
-          (send-change)))))))
+  (unless overleaf-change
+    (let ((overleaf--buffer (current-buffer)))
+      (setq-local overleaf--before-change (buffer-substring-no-properties begin end))
+      (setq-local overleaf--before-change-begin begin)
+      (setq-local overleaf--before-change-end end)
+      (when
+          (or
+           (not (or (= begin last-change-begin) (= begin last-change-end) (= end last-change-begin) (= end last-change-end)))
+           (and (= end begin) (or (eq last-change-type :d)))
+           (and (eq last-change-type :i) (or (> end begin) (> (length overleaf--before-change) 0))))
+        ;; (message "QUEUE %i %i %i %i %S" begin end last-change-begin last-change-end last-change-type)
+        (send-message-from-edit-queue (current-buffer))))))
 
 
 
