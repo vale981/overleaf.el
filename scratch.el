@@ -48,7 +48,8 @@
                  (setq-local buffer-read-only nil)
                  (erase-buffer)
                  (insert (overleaf--decode-utf8 (string-join (json-parse-string doc) "\n")))
-                 (goto-char point))))))
+                 (goto-char point)
+                 (setq buffer-undo-list nil))))))
         ("5"
          (when message-raw
            (when-let* ((message (json-parse-string message-raw :object-type 'plist :array-type 'list))
@@ -71,14 +72,15 @@
 
                   (when (> version vers)
                     (setq vers version)
+                    (undo-boundary)
                     (dolist (op (plist-get (car  (plist-get message :args)) :op))
                       (goto-char (1+ (plist-get op :p)))
                       (when-let* ((insert (plist-get op :i)))
                         (insert (overleaf--decode-utf8 insert)))
                       (when-let* ((delete (plist-get op :d)))
                         (re-search-forward (regexp-quote delete) nil t)
-                        (replace-match "")))
-                    ))))))
+                        (replace-match ""))))
+                  (setq buffer-undo-list (memq nil buffer-undo-list)))))))
          ))
       )))
 
@@ -203,6 +205,10 @@ Version: 2024-04-03"
             (when-let* ((message (car send-message-queue)))
               (setq-local edit-in-flight (cdr message))
               (websocket-send-text wstest-ws (car message))
+              (websocket-send-text wstest-ws
+                                   (format "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
+                                           (current-line) (current-column) overleaf-document-id))
+
               (setq send-message-queue (cdr send-message-queue)))))))))
 
 (defun queue-change (&optional buffer)
@@ -211,9 +217,6 @@ Version: 2024-04-03"
       (with-current-buffer overleaf--buffer
         (when (and last-change-type (websocket-openp wstest-ws))
           ;; (message "======> %s %i %i %s" last-change-type last-change-begin (point) deletion-buffer)
-          (websocket-send-text wstest-ws
-                               (format "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
-                                       (current-line) (current-column) overleaf-document-id))
           (pcase last-change-type
             (:d
              (edit-queue-message
@@ -232,6 +235,7 @@ Version: 2024-04-03"
       (with-current-buffer buffer
         (queue-change)
         (when (and wstest-ws (websocket-openp wstest-ws) send-edit-queue)
+          (setq-local buffer-read-only t)
           (queue-message
            (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":%s,\"meta\": {\"tc\":\"%s\"},\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
                    sequence-id
@@ -242,20 +246,23 @@ Version: 2024-04-03"
            (1+ vers))
           (setq-local sequence-id (1+ sequence-id))
           (setq-local vers (1+ vers))
-          (setq send-edit-queue '()))))))
+          (setq send-edit-queue '())
+          (setq-local buffer-read-only nil))))))
 
 
 (defvar-local overleaf--before-change "")
 (defvar-local overleaf--before-change-begin -1)
+
 (defun on-change (begin end length)
   ;; (message "after %i %i %s %S" begin end length last-change-type)
   (let ((overleaf--buffer (current-buffer)))
     (unless overleaf-change
       (let ((new (buffer-substring-no-properties begin end)))
-        (unless (and (equal (buffer-substring-no-properties begin end) overleaf--before-change))
+        ;; (message "%s %s" (json-encode-string overleaf--before-change) (json-encode-string new))
+        (unless (and (equal new overleaf--before-change))
           (let ((empty-before (equal overleaf--before-change ""))
                 (empty-after (equal new "")))
-            ;; (message "%s %s" (json-encode-string overleaf--before-change) (json-encode-string new))
+
             (cond
              (empty-before
               (let ((begin-matches (= begin last-change-end))
@@ -280,10 +287,12 @@ Version: 2024-04-03"
               ;; (when (and last-change-type (not (eq last-change-type :d)))
               ;;   (message "NOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO"))
 
+              ;; (message "del" )
+
               (unless last-change-type
                 (setq-local last-change-begin overleaf--before-change-begin)
                 (setq-local last-change-end end))
-              (message "%i %i" last-change-begin last-change-end)
+
               (setq last-change-type :d)
               (if (> last-change-begin  overleaf--before-change-begin)
                   (progn
@@ -291,7 +300,29 @@ Version: 2024-04-03"
                     (setq-local deletion-buffer (concat overleaf--before-change deletion-buffer)))
                 (setq-local deletion-buffer (concat deletion-buffer overleaf--before-change))
                 (setq last-change-end end))
-              (setq-local last-change-begin overleaf--before-change-begin)))))))))
+              (setq-local last-change-begin overleaf--before-change-begin))
+             (t
+              (let ((overleaf-change t))
+                (delete-region begin end)
+                (save-excursion
+                  (goto-char overleaf--before-change-begin)
+                  (insert overleaf--before-change)))
+              (let ((overleaf-change nil))
+                (delete-region overleaf--before-change-begin overleaf--before-change-end))
+
+              (setq-local last-change-begin overleaf--before-change-begin)
+              (setq-local last-change-end overleaf--before-change-end)
+              (setq-local last-change-type :d)
+              (setq-local deletion-buffer overleaf--before-change)
+              (queue-change)
+              (send-message-from-edit-queue overleaf--buffer)
+              (goto-char overleaf--before-change-begin)
+              (setq-local last-change-begin begin)
+              (setq-local last-change-end end)
+              (setq-local last-change-type :i)
+              (insert new)
+              (queue-change)
+              (send-message-from-edit-queue overleaf--buffer)))))))))
 
 (defvar-local overleaf--before-change-end -1)
 
@@ -322,3 +353,15 @@ Version: 2024-04-03"
       (erase-buffer)
       (when was-read-only
         (read-only-mode 1)))))
+
+;; (setq tracker nil)
+;; (defun test-track (a b c)
+;;   (message "%i %i %s" a b c))
+;; (defun test-sig (a &optional b )
+;;   (unless tracker
+;;     (setq tracker a))
+;;   (track-changes-fetch tracker #'test-track)
+;;   t)
+
+;; (with-current-buffer (get-buffer-create "test")
+;;   (track-changes-register #'test-sig))
