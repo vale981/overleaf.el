@@ -3,7 +3,11 @@
 (require 'websocket)
 (require 'plz)
 
-(defvar overleaf-cookies nil)
+(defvar overleaf-cookies nil
+  "A string or function that returns a string containing the overleaf authentication cookies.
+
+For example the variable can be bound to a function that loads the cookies from a gpg encrypted file.")
+
 (defvar-local overleaf-url "https://www.overleaf.com")
 (defvar-local overleaf-project-id nil)
 (defvar-local overleaf-document-id nil)
@@ -24,6 +28,7 @@
 (defvar-local edit-in-flight nil)
 (defvar-local vers -1)
 (defvar-local overleaf--mode-line "")
+(defvar buffer-ws-table (make-hash-table :test #'equal))
 
 (defun parse-message (ws message)
   (with-current-buffer overleaf--buffer
@@ -102,6 +107,7 @@
   (let ((overleaf--buffer (gethash (websocket-url _websocket) buffer-ws-table)))
     (with-current-buffer overleaf--buffer
       (when overleaf--websocket
+        (setq-local buffer-read-only nil)
         (cancel-timer message-timer)
         (cancel-timer send-timer)
         (remhash (websocket-url _websocket) buffer-ws-table)
@@ -140,18 +146,25 @@
            (cancel-timer send-timer))
          (run-with-idle-timer overleaf-send-interval t #'send-message-from-edit-queue overleaf--buffer))))))
 
-(defvar buffer-ws-table (make-hash-table :test #'equal))
+
+(defun overleaf--get-cokies ()
+  "Load the cookies either directly as a string from `overleaf-cookies` or by calling the function bound to the symbol."
+  (if (or (functionp overleaf-cookies)
+          (fboundp 'overleaf-cookies))
+      (funcall overleaf-cookies)
+    overleaf-cookies))
 
 (defun connect-over ()
   (interactive)
   (overleaf-connection-mode t)
   (disconnect)
   (if (and overleaf-cookies overleaf-document-id overleaf-project-id)
-      (let ((overleaf--buffer (current-buffer))
-            (ws-id
-             (car (string-split
-                   (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" overleaf-url overleaf-project-id)
-                     :headers `(("Cookie" . ,overleaf-cookies))) ":"))))
+      (let* ((overleaf--buffer (current-buffer))
+             (cookies (overleaf--get-cokies))
+             (ws-id
+              (car (string-split
+                    (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" overleaf-url overleaf-project-id)
+                      :headers `(("Cookie" . ,cookies))) ":"))))
 
         (with-current-buffer overleaf--buffer
           (setq-local last-change-type nil)
@@ -173,7 +186,7 @@
                          :on-message #'on-message
                          :on-close #'on-close
                          :on-open #'on-open
-                         :custom-header-alist `(("Cookie" . ,overleaf-cookies)))))
+                         :custom-header-alist `(("Cookie" . ,cookies)))))
            overleaf--buffer
            buffer-ws-table)
           (overleaf--update-modeline)))
