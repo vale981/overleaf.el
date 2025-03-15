@@ -1,1 +1,0 @@
-("node_modules/uglify-js/README.org" ".envrc" ".gitignore" ".python-version" "README.md" "data/www.overleaf.com_Archive [25-03-09 11-55-52].har" "decode.js" "devenv.lock" "devenv.nix" "devenv.yaml" "emacs_overleaf.org" "hello.py" "package.json" "pyproject.toml" "scratch.el" "test.js" "test.py" "uv.lock" "yarn.lock")

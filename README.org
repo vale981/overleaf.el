@@ -1,0 +1,84 @@
+* Overleaf Connection Mode
+This packages provides ~overleaf-connection-mode~ that allows to
+live-edit $\LaTeX$ files on [[https://github.com/overleaf/overleaf][overleaf]].
+
+*This package is currently in alpha. Simultaneous edits from multiple
+users still have to be tested.*
+
+To use this package, you can clone the repo, make it available in you
+load path and ~(require 'overleaf-connection)~. You can also use
+~use-package~:
+#+begin_src elisp
+  (use-package overleaf-connection
+    :vc (:fetcher github :repo vale981/overleaf-connection.el))
+#+end_src
+
+** Usage
+Two pieces of data are required to edit a document on overleaf.
+First, there are the session cookies which are most easily obtained
+through the browser developer tools. Simply open the overleaf document
+you want to edit and enable network monitoring. Select any request
+made to the overleaf domain and get the contents of the =Cookie= request
+header. It should have contents like:
+#+begin_src text
+  overleaf_session2=[redacted]; __stripe_mid=[redacted]; GCLB=[redacted]; __stripe_sid=redacted
+#+end_src
+The variable ~overleaf-cookies~ may either be set to
+#+begin_src elisp
+  (setq overleaf-cookies "overleaf_session2=[redacted]; __stripe_mid=[redacted]; GCLB=[redacted]; __stripe_sid=redacted")
+#+end_src
+or to a function that returns the cookie string. For example, the cookies can be loaded from a =gpg= encrypted file:
+#+begin_src elisp
+  (setq overleaf-cookies
+        #'(lambda ()
+            (with-temp-buffer
+              (insert-file-contents (expand-file-name "~/.overleaf-cookies.gpg"))
+              (string-trim (buffer-string)))))
+#+end_src
+
+Second, the ~overleaf-project-id~ and ~overleaf-document-id~ are
+required. These can most easily obtained by downloading the file to be
+edited from overleaf and inspecting the download URL which is of the
+shape
+#+begin_src text
+https://[overleaf-domain]/project/[project-id]
+#+end_src
+
+Once the cookies are set, visit a buffer that you would like to sync
+with overleaf (this buffer will be cleared). This buffer may or may
+not be backed by a file. Calling ~overleaf-connect~ will connect this
+buffer to overleaf. If the buffer does not contain buffer local
+variables that set the document id and project id you will be prompted
+to enter those. They will subsequently written to the buffer as
+buffer-local variables. It is therefore advisable to save this buffer
+so that re-connection is simplified at later times. *The contents of
+the buffer will be overwritten by the contents of the file on overleaf
+and the undo history will be reset.*
+
+The overleaf instance can be customized by changing the ~overleaf-url~
+variable.
+
+Calling ~overleaf-toggle-track-changes~ toggles whether the edits made
+in emacs will tracked (highlighted) by overleaf.
+
+Calling ~overleaf-disconnect~ disconnects the current buffer from overleaf.
+
+The modeline will indicate the connection status, as well as the
+number of changes that have yet to be synced to overleaf and whether the track-changes feature is enabled: ~(O: [<connection status>, <number of changes>, <track changes status>])~.
+
+*** Keybindings
+The keymap prefix can be customized with ~overleaf-keymap-prefix~ which defaults to ~C-c C-o~.
+
+The available keybindings
+  - =[prefix] c= - (re)-connect
+  - =[prefix] d= - disconnect
+  - =[prefix] t= - toggle track-changes
+
+** Troubleshooting
+Rather verbose logging may be enabled by setting ~overleaf-debug~ to ~t~.
+The log message will be collected in a buffer =*overleaf-[document-id]*=.
+
+Feel free to open an issue providing this log.
+
+** To-do
+** TODO indicate cursors of other users
