@@ -3,16 +3,46 @@
 (require 'websocket)
 (require 'plz)
 
-(defvar overleaf-cookies nil
-  "A string or function that returns a string containing the overleaf authentication cookies.
+(defcustom overleaf-keymap-prefix "C-c C-o"
+  "The prefix for dotcrafter-mode key bindings."
+  :type 'string
+  :group 'dotfiles)
 
-For example the variable can be bound to a function that loads the cookies from a gpg encrypted file.")
+(defvar overleaf-cookies nil
+  "The overleaf session cookies.
+
+Can a string or function that returns a string containing the overleaf
+authentication cookies.
+
+For example the variable can be bound to a function that loads the
+cookies from a gpg encrypted file.
+
+The cookies are most easily obtained from the developer tools in the
+browser.")
 
 (defvar-local overleaf-url "https://www.overleaf.com")
-(defvar-local overleaf-project-id nil)
-(defvar-local overleaf-document-id nil)
-(defvar-local overleaf--buffer nil)
-(defvar-local overleaf-change nil)
+(defvar-local overleaf-project-id nil
+  "The overleaf project id.
+
+When having a project opened in the browser the URL should read
+\"https://[overleaf-domain]/project/[project-id]\".
+")
+
+(defvar-local overleaf-document-id nil
+  "The overleaf document id as a string.
+
+The id is most easily obtained by downloading the file that is to be
+edited from the overleaf interface. The download URL will then be of the form
+\"https://[overleaf-domain]/project/[project-id]/doc/[document-id]\".")
+
+(defvar-local overleaf-track-changes nil
+  "Whether or not to track changes in overleaf.")
+
+(defvar-local overleaf--buffer nil
+  "The ")
+(defvar-local overleaf--is-overleaf-change nil
+  "Is set to `t` if the current change in the buffer comes from overleaf.
+Used to inhibit the change detection.")
 (defvar-local force-close nil)
 (defvar-local overleaf--websocket nil)
 (defvar-local last-change-type nil)
@@ -30,6 +60,24 @@ For example the variable can be bound to a function that loads the cookies from 
 (defvar-local overleaf--mode-line "")
 (defvar buffer-ws-table (make-hash-table :test #'equal))
 
+(defun overleaf--connected-p ()
+  "Returns `t` if the buffer is connected to overleaf."
+  (and overleaf--websocket
+       (websocket-openp overleaf--websocket)
+       (>= vers 0)))
+
+(defun overleaf--write-buffer-variables ()
+  "Write the current buffer-local variables to the buffer."
+  (when (overleaf--connected-p)
+    (let ((overleaf--is-overleaf-change nil)
+          (track-changes overleaf-track-changes))
+      (setq-local overleaf-track-changes nil)
+      (add-file-local-variable 'overleaf-document-id overleaf-document-id)
+      (add-file-local-variable 'overleaf-project-id overleaf-project-id)
+      (add-file-local-variable 'overleaf-track-changes track-changes)
+      (send-message-from-edit-queue (current-buffer))
+      (setq-local overleaf-track-changes track-changes))))
+
 (defun parse-message (ws message)
   (with-current-buffer overleaf--buffer
     (pcase-let ((`(,id ,message-raw) (string-split message ":::")))
@@ -43,13 +91,14 @@ For example the variable can be bound to a function that loads the cookies from 
                               (match-string 1 message)))
 
                        (version (1- (string-to-number (match-string 2 message))))
-                       (overleaf-change t))
+                       (overleaf--is-overleaf-change t))
              (setq vers version)
              (when doc
                (let ((point (point)))
                  (setq-local buffer-read-only nil)
                  (erase-buffer)
                  (insert (overleaf--decode-utf8 (string-join (json-parse-string doc) "\n")))
+                 (overleaf--write-buffer-variables)
                  (goto-char point)
                  (setq buffer-undo-list nil)))))
          (overleaf--update-modeline))
@@ -69,7 +118,7 @@ For example the variable can be bound to a function that loads the cookies from 
                   (websocket-send-text ws res)))
                ("otUpdateApplied"
                 (let ((version (plist-get (car (plist-get message :args)) :v))
-                      (overleaf-change t))
+                      (overleaf--is-overleaf-change t))
                   (when (eq edit-in-flight version)
                     (setq edit-in-flight nil))
 
@@ -158,15 +207,23 @@ For example the variable can be bound to a function that loads the cookies from 
   (interactive)
   (overleaf-connection-mode t)
   (disconnect)
-  (if (and overleaf-cookies overleaf-document-id overleaf-project-id)
-      (let* ((overleaf--buffer (current-buffer))
-             (cookies (overleaf--get-cokies))
-             (ws-id
-              (car (string-split
-                    (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" overleaf-url overleaf-project-id)
-                      :headers `(("Cookie" . ,cookies))) ":"))))
+  (if overleaf-cookies
+      (let*
+          ((overleaf--buffer (current-buffer))
+           (cookies (overleaf--get-cokies))
+           (ws-id
+            (car (string-split
+                  (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" overleaf-url overleaf-project-id)
+                    :headers `(("Cookie" . ,cookies))) ":"))))
 
         (with-current-buffer overleaf--buffer
+          (setq overleaf-project-id
+                (or overleaf-project-id
+                    (read-from-minibuffer "Overleaf project id: ")))
+          (setq overleaf-document-id
+                (or overleaf-document-id
+                    (read-from-minibuffer "Overleaf document id: ")))
+
           (setq-local last-change-type nil)
           (setq-local deletion-buffer "")
           (setq-local send-edit-queue '())
@@ -190,7 +247,7 @@ For example the variable can be bound to a function that loads the cookies from 
            overleaf--buffer
            buffer-ws-table)
           (overleaf--update-modeline)))
-    (error "Please set `overleaf-cookies`, `overleaf-project-id` and `overleaf-document-id`.")))
+    (error "Please set `overleaf-cookies`.")))
 
 (defun xah-random-string (&optional CountX)
   "return a random string of length CountX.
@@ -262,12 +319,16 @@ Version: 2024-04-03"
         (when (and overleaf--websocket (websocket-openp overleaf--websocket) send-edit-queue)
           (setq-local buffer-read-only t)
           (queue-message
-           (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":%s,\"meta\": {\"tc\":\"%s\"},\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
+           (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":%s%s,\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
                    sequence-id
                    overleaf-document-id
                    overleaf-document-id
                    (json-encode (apply #'vector send-edit-queue))
-                   (xah-random-string 18) (1+ vers) vers (get-hash))
+                   (if overleaf-track-changes
+                       (format ",\"meta\": {\"tc\":\"%s\"}"
+                               (xah-random-string 18))
+                     "")
+                   (1+ vers) vers (get-hash))
            (1+ vers))
           (setq-local sequence-id (1+ sequence-id))
           (setq-local vers (1+ vers))
@@ -281,7 +342,7 @@ Version: 2024-04-03"
 (defun on-change (begin end length)
   ;; (message "after %i %i %s %S" begin end length last-change-type)
   (let ((overleaf--buffer (current-buffer)))
-    (unless overleaf-change
+    (unless overleaf--is-overleaf-change
       (let ((new (buffer-substring-no-properties begin end)))
         ;; (message "%s %s" (json-encode-string overleaf--before-change) (json-encode-string new))
         (unless (and (equal new overleaf--before-change))
@@ -327,12 +388,12 @@ Version: 2024-04-03"
                 (setq last-change-end end))
               (setq-local last-change-begin overleaf--before-change-begin))
              (t
-              (let ((overleaf-change t))
+              (let ((overleaf--is-overleaf-change t))
                 (delete-region begin end)
                 (save-excursion
                   (goto-char overleaf--before-change-begin)
                   (insert overleaf--before-change)))
-              (let ((overleaf-change nil))
+              (let ((overleaf--is-overleaf-change nil))
                 (delete-region overleaf--before-change-begin overleaf--before-change-end))
 
               (setq-local last-change-begin overleaf--before-change-begin)
@@ -352,7 +413,7 @@ Version: 2024-04-03"
 (defvar-local overleaf--before-change-end -1)
 
 (defun before-change (begin end)
-  (unless overleaf-change
+  (unless overleaf--is-overleaf-change
     (let ((overleaf--buffer (current-buffer)))
       (setq-local overleaf--before-change (buffer-substring-no-properties begin end))
       (setq-local overleaf--before-change-begin begin)
@@ -391,6 +452,9 @@ Version: 2024-04-03"
                                "⟲"
                              "✓")
                            (format ", %i" (length send-message-queue))
+                           (if overleaf-track-changes
+                               ", t"
+                             "")
                            "]")
                  "[ ]")
                ")"))
@@ -411,6 +475,18 @@ Version: 2024-04-03"
   (overleaf--update-modeline)
   (setq inhibit-modification-hooks nil))
 
+(defun overleaf-toggle-track-changes ()
+  "Toggle tracking changes on overleaf."
+  (interactive)
+  (setq-local overleaf-track-changes (not overleaf-track-changes))
+  (overleaf--write-buffer-variables)
+  (overleaf--update-modeline))
+
+
+(defmacro overleaf--key (key function)
+  "Define a mapping of KEY to FUNCTION with the appropriate prefix."
+  `(cons (kbd ,(concat overleaf-keymap-prefix " " key))  #',function))
+
 
 
 ;;;###autoload
@@ -419,11 +495,11 @@ Version: 2024-04-03"
 Interactively with no argument, this command toggles the mode."
 
   :init-value nil
-
   :ligther " Overleaf"
-
   :keymap
-  '(((kbd "C-c O c" . #'connect-over)
-     (kbd "C-c O d" . #'disconnect)))
+  (list
+   (overleaf--key "c" connect-over)
+   (overleaf--key "d" disconnect)
+   (overleaf--key "t" overleaf-toggle-track-changes))
 
   (overleaf--init))
