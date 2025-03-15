@@ -1,8 +1,42 @@
-;;; -*- lexical-binding: t; -*-
+;;; overleaf-connection.el --- Sync and track changes live with overleaf. -*- lexical-binding: t; -*-
+;; Copyright (C) 2020-2025 Valentin Boettcher
+
+
+;; Author: Shigeaki Nishina, Valentin Boettcher
+;; Maintainer: Valentin Boettcher <hiro at protagon.space>
+;; Created: May 11, 2024
+;; URL: https://github.com/vale981/py-vterm-interaction.el
+;; Package-Requires: ((plz "0.9") (websocket "1.15"))
+;; Version: 0.0.1
+;; Keywords: latex, overleaf
+
+;; This file is not part of GNU Emacs.
+
+;;; License:
+
+;; This program is free software: you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or (at
+;; your option) any later version.
+;;
+;; This program is distributed in the hope that it will be useful, but
+;; WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+;; General Public License for more details.
+;;
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see https://www.gnu.org/licenses/.
+
+;;; Commentary:
+
+;; Provides a minor mode that allows to sync the changes of a buffer
+;; to an overleaf instance (https://github.com/overleaf/overleaf).
+
 
 (require 'websocket)
 (require 'plz)
 
+;;; Code:
 (defcustom overleaf-keymap-prefix "C-c C-o"
   "The prefix for dotcrafter-mode key bindings."
   :type 'string
@@ -35,18 +69,22 @@ browser.")
   :type 'float
   :group 'overleaf-connection-mode)
 
+(defcustom overleaf-debug nil
+  "Whether to log debug messages."
+  :type 'boolean
+  :group 'overleaf-connection-mode)
+
 (defvar-local overleaf-project-id nil
   "The overleaf project id.
 
 When having a project opened in the browser the URL should read
-\"https://[overleaf-domain]/project/[project-id]\".
-")
+\"https://[overleaf-domain]/project/[project-id]\".")
 
 (defvar-local overleaf-document-id nil
   "The overleaf document id as a string.
 
 The id is most easily obtained by downloading the file that is to be
-edited from the overleaf interface. The download URL will then be of the form
+edited from the overleaf interface.   The download URL will then be of the form
 \"https://[overleaf-domain]/project/[project-id]/doc/[document-id]\".")
 
 (defvar-local overleaf-track-changes nil
@@ -63,11 +101,6 @@ Used to inhibit the change detection.")
 (defvar-local overleaf--websocket nil
   "The websocket instance connected to overleaf.")
 
-
-(defvar-local overleaf--last-change-type nil)
-(defvar-local overleaf--last-change-begin 0)
-(defvar-local overleaf--last-change-end 0)
-(defvar-local overleaf--deletion-buffer "")
 (defvar-local overleaf--flush-edit-queue-timer nil
   "A timer that flushes the edit queue.
 
@@ -101,6 +134,15 @@ See `overleaf--message-timer'.")
 (defvar overleaf--buffer
   "The current overleaf buffer (used in lexical binding).")
 
+(defun overleaf--debug (format-string &rest args)
+  "Print a debug message with format string FORMAT-STRING and arguments ARGS."
+  (when overleaf-debug
+    (with-current-buffer (get-buffer-create (format "*overleaf-%s*" overleaf-document-id))
+      (setq buffer-read-only nil)
+      (insert (apply #'format format-string args))
+      (insert "\n")
+      (setq buffer-read-only t))))
+
 (defun overleaf--connected-p ()
   "Return t if the buffer is connected to overleaf."
   (and overleaf--websocket
@@ -119,7 +161,7 @@ See `overleaf--message-timer'.")
       (overleaf--flush-edit-queue (current-buffer))
       (setq-local overleaf-track-changes track-changes))))
 
-(defun parse-message (ws message)
+(defun overleaf--parse-message (ws message)
   "Parse a message MESSAGE from overleaf, responding by writing to WS."
   (with-current-buffer overleaf--buffer
     (pcase-let ((`(,id ,message-raw) (string-split message ":::")))
@@ -151,17 +193,19 @@ See `overleaf--message-timer'.")
 
              (pcase name
                ("otUpdateError"
-                (prin1  (plist-get message :args)))
+                (warn "Overleaf update error: %S" (plist-get message :args)))
                ("joinProjectResponse"
                 (websocket-send-text ws (format "5:2+::{\"name\":\"joinDoc\",\"args\":[\"%s\",{\"encodeRanges\":true}]}" overleaf-document-id)))
                ("serverPing"
-                ;; (message "=========> PONG" )
+                (overleaf--debug "Received Ping -> PONG")
                 (let ((res (concat id ":::" (json-encode `(:name "clientPong" :args ,(plist-get message :args))))))
                   (websocket-send-text ws res)))
                ("otUpdateApplied"
                 (let ((version (plist-get (car (plist-get message :args)) :v))
                       (overleaf--is-overleaf-change t))
+                  (overleaf--debug "Got update with version %s (buffer version %s)" version overleaf--doc-version)
                   (when (eq overleaf--edit-in-flight version)
+                    (overleaf--debug "BINGO, we've been waiting for this.")
                     (setq overleaf--edit-in-flight nil))
 
                   (when (> version overleaf--doc-version)
@@ -174,34 +218,38 @@ See `overleaf--message-timer'.")
                       (when-let* ((delete (plist-get op :d)))
                         (re-search-forward (regexp-quote delete) nil t)
                         (replace-match "")))
-                    (setq buffer-undo-list (memq nil buffer-undo-list))))))))
-         ))
-      )))
+                    (setq buffer-undo-list (memq nil buffer-undo-list)))))))))))))
 
 (defun overleaf--decode-utf8 (str)
+  "Decode the weird overleaf utf8 decoding in STR.
+
+This calls out to node.js for now."
   (with-temp-buffer
     (call-process "node" nil t nil (concat (file-name-directory (symbol-file 'overleaf--decode-utf8)) "decode.js") str)
     (buffer-string)))
 
-
-
-(defun disconnect ()
+(defun overleaf-disconnect ()
+  "Disconnect from overleaf."
   (interactive)
   (when overleaf--websocket
+    (overleaf--debug "Disconnecting")
     (setq-local overleaf--force-close t)
     (setq-local overleaf--edit-queue '())
     (setq-local send-message-queue '())
     (websocket-close overleaf--websocket)
     (setq-local overleaf--force-close nil)))
 
-(defun on-close (_websocket)
-  (let ((overleaf--buffer (gethash (websocket-url _websocket) overleaf--buffer-ws-table)))
+(defun overleaf--on-close (ws)
+  "Handle the closure of the websocket WS."
+  (let ((overleaf--buffer
+         (gethash (websocket-url ws) overleaf--buffer-ws-table)))
     (with-current-buffer overleaf--buffer
       (when overleaf--websocket
+        (overleaf--debug "Websocket closed.")
         (setq-local buffer-read-only nil)
         (cancel-timer overleaf--message-timer)
         (cancel-timer overleaf--flush-edit-queue-timer)
-        (remhash (websocket-url _websocket) overleaf--buffer-ws-table)
+        (remhash (websocket-url ws) overleaf--buffer-ws-table)
         (setq-local overleaf--websocket nil)
         (overleaf--update-modeline)
         (unless overleaf--force-close
@@ -209,27 +257,33 @@ See `overleaf--message-timer'.")
             (setq buffer-read-only t)
             (sleep-for .1)
             (setq overleaf--websocket nil)
-            (connect-over)))))))
+            (overleaf-connect)))))))
 
-(defun on-message (ws frame)
-  (let ((overleaf--buffer (gethash (websocket-url ws) overleaf--buffer-ws-table)))
-    (parse-message ws (websocket-frame-text frame))))
+(defun overeleaf--on-message (ws frame)
+  "Handle a message received from websocket WS with contents FRAME."
+  (let ((overleaf--buffer
+         (gethash (websocket-url ws) overleaf--buffer-ws-table)))
+    (overleaf--debug "Got message %S" frame)
+    (overleaf--parse-message ws (websocket-frame-text frame))))
 
-(defun on-open (_websocket)
-  (let ((overleaf--buffer (gethash (websocket-url _websocket) overleaf--buffer-ws-table)))
+(defun overleaf--on-open (_websocket)
+  "Handle the open even of the web-socket _WEBSOCKET."
+  (let ((overleaf--buffer
+         (gethash (websocket-url _websocket) overleaf--buffer-ws-table)))
+
     (with-current-buffer overleaf--buffer
       (overleaf--update-modeline)
 
-      (add-hook 'after-change-functions #'on-change nil t)
-      (add-hook 'before-change-functions #'before-change nil t)
-      (add-hook 'kill-buffer-hook #'disconnect nil t)
+      (add-hook 'after-change-functions #'overleaf--after-change-function nil t)
+      (add-hook 'before-change-functions #'overleaf--before-change-function nil t)
+      (add-hook 'kill-buffer-hook #'overleaf-disconnect nil t)
 
       (setq-local
        overleaf--message-timer
        (progn
          (when overleaf--message-timer
            (cancel-timer overleaf--message-timer))
-         (run-at-time t overleaf-message-interval #'send-queued-message overleaf--buffer)))
+         (run-at-time t overleaf-message-interval #'overleaf--send-queued-message overleaf--buffer)))
 
       (setq-local
        overleaf--flush-edit-queue-timer
@@ -246,19 +300,25 @@ See `overleaf--message-timer'.")
       (funcall overleaf-cookies)
     overleaf-cookies))
 
-(defun connect-over ()
+(defun overleaf-toggle-track-changes ()
+  "Toggle track-changes feature change on overleaf."
   (interactive)
-  (overleaf-connection-mode t)
-  (disconnect)
-  (if overleaf-cookies
-      (let*
-          ((overleaf--buffer (current-buffer))
-           (cookies (overleaf--get-cokies))
-           (ws-id
-            (car (string-split
-                  (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" overleaf-url overleaf-project-id)
-                    :headers `(("Cookie" . ,cookies))) ":"))))
+  (setq-local overleaf-track-changes (not overleaf-track-changes))
+  (overleaf--write-buffer-variables)
+  (overleaf--update-modeline))
 
+
+(defun overleaf-connect ()
+  "Connect to overleaf.
+Requires `overleaf-cookies' to be set.  Prompts for the
+`overleaf-project-id' and `overleaf-document-id` and saves them in the
+file."
+  (interactive)
+
+  (overleaf-connection-mode t)
+  (overleaf-disconnect)
+  (if overleaf-cookies
+      (let ((overleaf--buffer (current-buffer)))
         (with-current-buffer overleaf--buffer
           (setq overleaf-project-id
                 (or overleaf-project-id
@@ -266,36 +326,43 @@ See `overleaf--message-timer'.")
           (setq overleaf-document-id
                 (or overleaf-document-id
                     (read-from-minibuffer "Overleaf document id: ")))
+          (let ((cookies (overleaf--get-cokies))
+                (ws-id
+                 (car (string-split
+                       (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" overleaf-url overleaf-project-id)
+                         :headers `(("Cookie" . ,cookies))) ":"))))
 
-          (setq-local overleaf--last-change-type nil)
-          (setq-local overleaf--deletion-buffer "")
-          (setq-local overleaf--edit-queue '())
-          (setq-local send-message-queue '())
-          (setq-local overleaf--edit-in-flight nil)
-          (setq-local buffer-read-only t)
-          (setq-local overleaf--doc-version -1)
-          (setq-local sequence-id 2)
-          (puthash
-           (websocket-url
-            (setq-local overleaf--websocket
-                        (websocket-open
-                         (replace-regexp-in-string
-                          "https" "wss"
-                          (format "%s/socket.io/1/websocket/%s?projectId=%s&esh=1&ssp=1"
-                                  overleaf-url ws-id overleaf-project-id))
-                         :on-message #'on-message
-                         :on-close #'on-close
-                         :on-open #'on-open
-                         :custom-header-alist `(("Cookie" . ,cookies)))))
-           overleaf--buffer
-           overleaf--buffer-ws-table)
-          (overleaf--update-modeline)))
-    (error "Please set `overleaf-cookies`.")))
+            (overleaf--debug "Connecting %s %s" overleaf-project-id overleaf-document-id)
 
-(defun xah-random-string (&optional CountX)
-  "return a random string of length CountX.
-The possible chars are: 2 to 9, upcase or lowercase English alphabet but no a e i o u, no L l and no 0 1.
+            (setq-local overleaf--last-change-type nil)
+            (setq-local overleaf--deletion-buffer "")
+            (setq-local overleaf--edit-queue '())
+            (setq-local send-message-queue '())
+            (setq-local overleaf--edit-in-flight nil)
+            (setq-local buffer-read-only t)
+            (setq-local overleaf--doc-version -1)
+            (setq-local sequence-id 2)
+            (puthash
+             (websocket-url
+              (setq-local overleaf--websocket
+                          (websocket-open
+                           (replace-regexp-in-string
+                            "https" "wss"
+                            (format "%s/socket.io/1/websocket/%s?projectId=%s&esh=1&ssp=1"
+                                    overleaf-url ws-id overleaf-project-id))
+                           :on-message #'overeleaf--on-message
+                           :on-close #'overleaf--on-close
+                           :on-open #'overleaf--on-open
+                           :custom-header-alist `(("Cookie" . ,cookies)))))
+             overleaf--buffer
+             overleaf--buffer-ws-table)
+            (overleaf--update-modeline))))
+    (error "Please set `overleaf-cookies`")))
 
+(defun overleaf--random-string (&optional CountX)
+  "Return a random string of length COUNTX.
+
+Pilfered from
 URL `http://xahlee.info/emacs/emacs/elisp_insert_random_number_string.html'
 Version: 2024-04-03"
   (interactive )
@@ -304,7 +371,8 @@ Version: 2024-04-03"
     (setq xvec (mapcar (lambda (_) (aref xcharset (random xcount))) (make-vector (if CountX CountX 5) 0)))
     (mapconcat 'char-to-string xvec)))
 
-(defun get-hash ()
+(defun overleaf--get-hash ()
+  "Get the hash of the overleaf buffer."
   (with-current-buffer overleaf--buffer
     (save-restriction
       (widen)
@@ -313,15 +381,19 @@ Version: 2024-04-03"
 
 
 (defun overleaf--escape-string (str)
+  "Escape STR to send to overleaf."
   (json-encode str))
 
-(defun edit-queue-message (edit)
+(defun overleaf--queue-edit (edit)
+  "Add EDIT to the edit queue."
   (setq overleaf--edit-queue (nconc overleaf--edit-queue (list edit))))
 
-(defun queue-message (message version)
+(defun overleaf--queue-message (message version)
+  "Queue edit MESSAGE leading to buffer version VERSION to be send to overleaf."
   (setq send-message-queue (nconc send-message-queue `((,message . ,version)))))
 
-(defun send-queued-message (&optional buffer)
+(defun overleaf--send-queued-message (&optional buffer)
+  "Send a message from the edit message queue of BUFFER if there is no other edit in flight."
   (let ((overleaf--buffer (or buffer overleaf--buffer)))
     (when overleaf--buffer
       (unless overleaf--edit-in-flight
@@ -330,24 +402,26 @@ Version: 2024-04-03"
             (when-let* ((message (car send-message-queue)))
               (setq-local overleaf--edit-in-flight (cdr message))
               (websocket-send-text overleaf--websocket (car message))
-              (websocket-send-text overleaf--websocket
-                                   (format "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
-                                           (current-line) (current-column) overleaf-document-id))
-
+              (websocket-send-text
+               overleaf--websocket
+               (format
+                "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
+                (current-line) (current-column) overleaf-document-id))
               (setq send-message-queue (cdr send-message-queue)))))))))
 
-(defun queue-change (&optional buffer)
+(defun overleaf--overleaf-queue-current-change (&optional buffer)
+  "Queue the change to BUFFER currently being built."
   (let ((overleaf--buffer (or buffer overleaf--buffer)))
     (when overleaf--buffer
       (with-current-buffer overleaf--buffer
         (when (and overleaf--last-change-type (websocket-openp overleaf--websocket))
-          ;; (message "======> %s %i %i %s" overleaf--last-change-type overleaf--last-change-begin (point) overleaf--deletion-buffer)
+          (overleaf--debug "======> %s %i %i %s" overleaf--last-change-type overleaf--last-change-begin (point) overleaf--deletion-buffer)
           (pcase overleaf--last-change-type
             (:d
-             (edit-queue-message
+             (overleaf--queue-edit
               `(:p ,(- overleaf--last-change-begin 1) :d ,overleaf--deletion-buffer)))
             (:i
-             (edit-queue-message
+             (overleaf--queue-edit
               `(:p ,(- overleaf--last-change-begin 1) :i ,(buffer-substring-no-properties overleaf--last-change-begin overleaf--last-change-end)))))
           (setq-local overleaf--last-change-type nil)
           (setq-local overleaf--last-change-begin -1)
@@ -355,13 +429,14 @@ Version: 2024-04-03"
           (setq-local overleaf--deletion-buffer ""))))))
 
 (defun overleaf--flush-edit-queue (buffer)
+  "Make an edit message and append it to the message queue of BUFFER."
   (when buffer
     (let ((overleaf--buffer buffer))
       (with-current-buffer buffer
-        (queue-change)
+        (overleaf--overleaf-queue-current-change)
         (when (and overleaf--websocket (websocket-openp overleaf--websocket) overleaf--edit-queue)
           (setq-local buffer-read-only t)
-          (queue-message
+          (overleaf--queue-message
            (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":%s%s,\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
                    sequence-id
                    overleaf-document-id
@@ -369,9 +444,9 @@ Version: 2024-04-03"
                    (json-encode (apply #'vector overleaf--edit-queue))
                    (if overleaf-track-changes
                        (format ",\"meta\": {\"tc\":\"%s\"}"
-                               (xah-random-string 18))
+                               (overleaf--random-string 18))
                      "")
-                   (1+ overleaf--doc-version) overleaf--doc-version (get-hash))
+                   (1+ overleaf--doc-version) overleaf--doc-version (overleaf--get-hash))
            (1+ overleaf--doc-version))
           (setq-local sequence-id (1+ sequence-id))
           (setq-local overleaf--doc-version (1+ overleaf--doc-version))
@@ -379,15 +454,22 @@ Version: 2024-04-03"
           (setq-local buffer-read-only nil))))))
 
 
+;;; Change Detection
 (defvar-local overleaf--before-change "")
 (defvar-local overleaf--before-change-begin -1)
+(defvar-local overleaf--before-change-end -1)
+(defvar-local overleaf--last-change-type nil)
+(defvar-local overleaf--last-change-begin 0)
+(defvar-local overleaf--last-change-end 0)
+(defvar-local overleaf--deletion-buffer "")
 
-(defun on-change (begin end length)
-  ;; (message "after %i %i %s %S" begin end length overleaf--last-change-type)
+(defun overleaf--after-change-function (begin end length)
+  "The after change hook that detects a change in region BEGIN - END of length LENGTH to be sent to overleaf."
+  (overleaf--debug "after %i %i %s %S" begin end length overleaf--last-change-type)
   (let ((overleaf--buffer (current-buffer)))
     (unless overleaf--is-overleaf-change
       (let ((new (buffer-substring-no-properties begin end)))
-        ;; (message "%s %s" (json-encode-string overleaf--before-change) (json-encode-string new))
+        (overleaf--debug "change %s -> %s" (json-encode-string overleaf--before-change) (json-encode-string new))
         (unless (and (equal new overleaf--before-change))
           (let ((empty-before (equal overleaf--before-change ""))
                 (empty-after (equal new "")))
@@ -396,7 +478,7 @@ Version: 2024-04-03"
              (empty-before
               (let ((begin-matches (= begin overleaf--last-change-end))
                     (end-matches (= end overleaf--last-change-begin)))
-                ;; (message "insert \"%s\"" new)
+                (overleaf--debug "insert \"%s\"" new)
 
                 (if (or (not overleaf--last-change-type) (eq overleaf--last-change-type :d) (not (or begin-matches end-matches)))
                     (progn
@@ -413,10 +495,7 @@ Version: 2024-04-03"
                    (end-matches
                     (setq overleaf--last-change-begin begin))))))
              (empty-after
-              ;; (when (and overleaf--last-change-type (not (eq overleaf--last-change-type :d)))
-              ;;   (message "NOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO"))
-
-              ;; (message "del" )
+              (overleaf--debug "delete")
 
               (unless overleaf--last-change-type
                 (setq-local overleaf--last-change-begin overleaf--before-change-begin)
@@ -443,19 +522,21 @@ Version: 2024-04-03"
               (setq-local overleaf--last-change-end overleaf--before-change-end)
               (setq-local overleaf--last-change-type :d)
               (setq-local overleaf--deletion-buffer overleaf--before-change)
-              (queue-change)
+              (overleaf--overleaf-queue-current-change)
               (overleaf--flush-edit-queue overleaf--buffer)
               (goto-char overleaf--before-change-begin)
               (setq-local overleaf--last-change-begin begin)
               (setq-local overleaf--last-change-end end)
               (setq-local overleaf--last-change-type :i)
               (insert new)
-              (queue-change)
+              (overleaf--overleaf-queue-current-change)
               (overleaf--flush-edit-queue overleaf--buffer)))))))))
 
-(defvar-local overleaf--before-change-end -1)
 
-(defun before-change (begin end)
+(defun overleaf--before-change-function (begin end)
+  "Change hook called to signal an impending change between BEGIN and END.
+
+Mainly used to detect switchover between deletion and insertion."
   (unless overleaf--is-overleaf-change
     (let ((overleaf--buffer (current-buffer)))
       (setq-local overleaf--before-change (buffer-substring-no-properties begin end))
@@ -463,26 +544,14 @@ Version: 2024-04-03"
       (setq-local overleaf--before-change-end end)
       (when
           (or
-           (not (or (= begin overleaf--last-change-begin) (= begin overleaf--last-change-end) (= end overleaf--last-change-begin) (= end overleaf--last-change-end)))
+           (not (or (= begin overleaf--last-change-begin)
+                    (= begin overleaf--last-change-end)
+                    (= end overleaf--last-change-begin)
+                    (= end overleaf--last-change-end)))
            (and (= end begin) (or (eq overleaf--last-change-type :d)))
            (and (eq overleaf--last-change-type :i) (or (> end begin) (> (length overleaf--before-change) 0))))
-        ;; (message "QUEUE %i %i %i %i %S" begin end overleaf--last-change-begin overleaf--last-change-end overleaf--last-change-type)
+        (overleaf--debug "Edit type switchover --> flushing edit queue")
         (overleaf--flush-edit-queue (current-buffer))))))
-
-
-
-
-(defun my-clear-messages-buffer ()
-  "Clear the contents of the *Messages* buffer if it is the current buffer."
-  (interactive)
-  (with-current-buffer (messages-buffer)
-    (let ((was-read-only buffer-read-only))
-      (when was-read-only
-        (read-only-mode -1))
-      (erase-buffer)
-      (when was-read-only
-        (read-only-mode 1)))))
-
 
 (defun overleaf--update-modeline ()
   "Update the modeline string to reflect the current connection status."
@@ -518,13 +587,6 @@ Version: 2024-04-03"
   (overleaf--update-modeline)
   (setq inhibit-modification-hooks nil))
 
-(defun overleaf-toggle-track-changes ()
-  "Toggle tracking changes on overleaf."
-  (interactive)
-  (setq-local overleaf-track-changes (not overleaf-track-changes))
-  (overleaf--write-buffer-variables)
-  (overleaf--update-modeline))
-
 
 (defmacro overleaf--key (key function)
   "Define a mapping of KEY to FUNCTION with the appropriate prefix."
@@ -541,12 +603,17 @@ Interactively with no argument, this command toggles the mode."
   :ligther " Overleaf"
   :keymap
   (list
-   (overleaf--key "c" connect-over)
-   (overleaf--key "d" disconnect)
+   (overleaf--key "c" overleaf-connect)
+   (overleaf--key "d" overleaf-disconnect)
    (overleaf--key "t" overleaf-toggle-track-changes))
 
   (if overleaf-connection-mode
       (overleaf--init)
     (setq-local overleaf--mode-line "")
     (force-mode-line-update t)
-    (disconnect)))
+    (overleaf-disconnect)))
+
+
+(provide 'overleaf-connection)
+
+;;; overleaf-connection.el ends here
