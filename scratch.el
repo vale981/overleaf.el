@@ -222,6 +222,7 @@ See `overleaf--message-timer'.")
 
       (add-hook 'after-change-functions #'on-change nil t)
       (add-hook 'before-change-functions #'before-change nil t)
+      (add-hook 'kill-buffer-hook #'disconnect nil t)
 
       (setq-local
        overleaf--message-timer
@@ -544,4 +545,8 @@ Interactively with no argument, this command toggles the mode."
    (overleaf--key "d" disconnect)
    (overleaf--key "t" overleaf-toggle-track-changes))
 
-  (overleaf--init))
+  (if overleaf-connection-mode
+      (overleaf--init)
+    (setq-local overleaf--mode-line "")
+    (force-mode-line-update t)
+    (disconnect)))
