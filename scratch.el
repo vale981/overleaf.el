@@ -38,8 +38,7 @@ edited from the overleaf interface. The download URL will then be of the form
 (defvar-local overleaf-track-changes nil
   "Whether or not to track changes in overleaf.")
 
-(defvar-local overleaf--buffer nil
-  "The ")
+
 (defvar-local overleaf--is-overleaf-change nil
   "Is set to `t` if the current change in the buffer comes from overleaf.
 Used to inhibit the change detection.")
@@ -56,15 +55,17 @@ Used to inhibit the change detection.")
 (defvar-local send-edit-queue '())
 (defvar-local send-message-queue '())
 (defvar-local edit-in-flight nil)
-(defvar-local vers -1)
+(defvar-local overleaf--doc-version -1)
 (defvar-local overleaf--mode-line "")
 (defvar buffer-ws-table (make-hash-table :test #'equal))
+(defvar overleaf--buffer
+  "The current overleaf buffer (used in lexical binding).")
 
 (defun overleaf--connected-p ()
   "Returns `t` if the buffer is connected to overleaf."
   (and overleaf--websocket
        (websocket-openp overleaf--websocket)
-       (>= vers 0)))
+       (>= overleaf--doc-version 0)))
 
 (defun overleaf--write-buffer-variables ()
   "Write the current buffer-local variables to the buffer."
@@ -79,6 +80,7 @@ Used to inhibit the change detection.")
       (setq-local overleaf-track-changes track-changes))))
 
 (defun parse-message (ws message)
+  "Parse a message MESSAGE from overleaf, responding by writing to WS."
   (with-current-buffer overleaf--buffer
     (pcase-let ((`(,id ,message-raw) (string-split message ":::")))
       (pcase id
@@ -92,7 +94,7 @@ Used to inhibit the change detection.")
 
                        (version (1- (string-to-number (match-string 2 message))))
                        (overleaf--is-overleaf-change t))
-             (setq vers version)
+             (setq overleaf--doc-version version)
              (when doc
                (let ((point (point)))
                  (setq-local buffer-read-only nil)
@@ -122,8 +124,8 @@ Used to inhibit the change detection.")
                   (when (eq edit-in-flight version)
                     (setq edit-in-flight nil))
 
-                  (when (> version vers)
-                    (setq vers version)
+                  (when (> version overleaf--doc-version)
+                    (setq overleaf--doc-version version)
                     (undo-boundary)
                     (dolist (op (plist-get (car  (plist-get message :args)) :op))
                       (goto-char (1+ (plist-get op :p)))
@@ -230,7 +232,7 @@ Used to inhibit the change detection.")
           (setq-local send-message-queue '())
           (setq-local edit-in-flight nil)
           (setq-local buffer-read-only t)
-          (setq-local vers -1)
+          (setq-local overleaf--doc-version -1)
           (setq-local sequence-id 2)
           (puthash
            (websocket-url
@@ -328,10 +330,10 @@ Version: 2024-04-03"
                        (format ",\"meta\": {\"tc\":\"%s\"}"
                                (xah-random-string 18))
                      "")
-                   (1+ vers) vers (get-hash))
-           (1+ vers))
+                   (1+ overleaf--doc-version) overleaf--doc-version (get-hash))
+           (1+ overleaf--doc-version))
           (setq-local sequence-id (1+ sequence-id))
-          (setq-local vers (1+ vers))
+          (setq-local overleaf--doc-version (1+ overleaf--doc-version))
           (setq send-edit-queue '())
           (setq-local buffer-read-only nil))))))
 
@@ -448,7 +450,7 @@ Version: 2024-04-03"
                "(O: "
                (if (websocket-openp overleaf--websocket)
                    (concat "["
-                           (if (= vers -1)
+                           (if (= overleaf--doc-version -1)
                                "⟲"
                              "✓")
                            (format ", %i" (length send-message-queue))
