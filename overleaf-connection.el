@@ -327,11 +327,11 @@ file."
           (setq overleaf-document-id
                 (or overleaf-document-id
                     (read-from-minibuffer "Overleaf document id: ")))
-          (let ((cookies (overleaf--get-cokies))
-                (ws-id
-                 (car (string-split
-                       (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" overleaf-url overleaf-project-id)
-                         :headers `(("Cookie" . ,cookies))) ":"))))
+          (let* ((cookies (overleaf--get-cokies))
+                 (ws-id
+                  (car (string-split
+                        (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" overleaf-url overleaf-project-id)
+                          :headers `(("Cookie" . ,cookies))) ":"))))
 
             (overleaf--debug "Connecting %s %s" overleaf-project-id overleaf-document-id)
 
