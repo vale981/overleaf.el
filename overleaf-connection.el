@@ -152,14 +152,15 @@ See `overleaf--message-timer'.")
 (defun overleaf--write-buffer-variables ()
   "Write the current buffer-local variables to the buffer."
   (when (overleaf--connected-p)
-    (let ((overleaf--is-overleaf-change nil)
-          (track-changes overleaf-track-changes))
-      (setq-local overleaf-track-changes nil)
-      (add-file-local-variable 'overleaf-document-id overleaf-document-id)
-      (add-file-local-variable 'overleaf-project-id overleaf-project-id)
-      (add-file-local-variable 'overleaf-track-changes track-changes)
-      (overleaf--flush-edit-queue (current-buffer))
-      (setq-local overleaf-track-changes track-changes))))
+    (save-excursion
+      (let ((overleaf--is-overleaf-change nil)
+            (track-changes overleaf-track-changes))
+        (setq-local overleaf-track-changes nil)
+        (add-file-local-variable 'overleaf-document-id overleaf-document-id)
+        (add-file-local-variable 'overleaf-project-id overleaf-project-id)
+        (add-file-local-variable 'overleaf-track-changes track-changes)
+        (overleaf--flush-edit-queue (current-buffer))
+        (setq-local overleaf-track-changes track-changes)))))
 
 (defun overleaf--parse-message (ws message)
   "Parse a message MESSAGE from overleaf, responding by writing to WS."
