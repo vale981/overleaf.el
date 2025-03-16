@@ -14,6 +14,7 @@ load path and ~(require 'overleaf-connection)~. You can also use
     :vc (:fetcher github :repo vale981/overleaf-connection.el))
 #+end_src
 
+*At the moment this package needs node.js to decode the weird unicode encoding that overleaf uses. I'm working on fixing that :)
 ** Usage
 Two pieces of data are required to edit a document on overleaf.
 First, there are the session cookies which are most easily obtained
