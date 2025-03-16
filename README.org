@@ -4,6 +4,7 @@ live-edit $\LaTeX$ files on [[https://github.com/overleaf/overleaf][overleaf]].
 
 *This package is currently in alpha. Simultaneous edits from multiple
 users still have to be tested.*
+[[file:assets/demo.gif]]
 
 To use this package, you can clone the repo, make it available in you
 load path and ~(require 'overleaf-connection)~. You can also use
