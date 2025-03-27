@@ -117,7 +117,7 @@ See `overleaf--message-queue'.")
 (defvar-local overleaf--edit-queue '()
   "A list of edits that can be send in one go.")
 
-(defvar-local send-message-queue '()
+(defvar-local overleaf--send-message-queue '()
   "A list of messages containing edits that have yet to be synced to overleaf.
 
 See `overleaf--message-timer'.")
@@ -251,7 +251,7 @@ This calls out to node.js for now."
     (overleaf--debug "Disconnecting")
     (setq-local overleaf--force-close t)
     (setq-local overleaf--edit-queue '())
-    (setq-local send-message-queue '())
+    (setq-local overleaf--send-message-queue '())
     (websocket-close overleaf--websocket)
     (when overleaf-auto-save
       (overleaf--save-buffer))
@@ -360,7 +360,7 @@ file."
             (setq-local overleaf--last-change-type nil)
             (setq-local overleaf--deletion-buffer "")
             (setq-local overleaf--edit-queue '())
-            (setq-local send-message-queue '())
+            (setq-local overleaf--send-message-queue '())
             (setq-local overleaf--edit-in-flight nil)
             (setq-local buffer-read-only t)
             (setq-local overleaf--doc-version -1)
@@ -413,7 +413,7 @@ Version: 2024-04-03"
 
 (defun overleaf--queue-message (message version)
   "Queue edit MESSAGE leading to buffer version VERSION to be send to overleaf."
-  (setq send-message-queue (nconc send-message-queue `((,message . ,version)))))
+  (setq overleaf--send-message-queue (nconc overleaf--send-message-queue `((,message . ,version)))))
 
 (defun overleaf--send-queued-message (&optional buffer)
   "Send a message from the edit message queue of BUFFER if there is no other edit in flight."
@@ -421,8 +421,8 @@ Version: 2024-04-03"
     (when overleaf--buffer
       (unless overleaf--edit-in-flight
         (with-current-buffer overleaf--buffer
-          (when send-message-queue
-            (when-let* ((message (car send-message-queue)))
+          (when overleaf--send-message-queue
+            (when-let* ((message (car overleaf--send-message-queue)))
               (setq-local overleaf--edit-in-flight (cdr message))
               (websocket-send-text overleaf--websocket (car message))
               (websocket-send-text
@@ -430,7 +430,7 @@ Version: 2024-04-03"
                (format
                 "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
                 (current-line) (current-column) overleaf-document-id))
-              (setq send-message-queue (cdr send-message-queue)))))))))
+              (setq overleaf--send-message-queue (cdr overleaf--send-message-queue)))))))))
 
 (defun overleaf--overleaf-queue-current-change (&optional buffer)
   "Queue the change to BUFFER currently being built."
@@ -586,7 +586,7 @@ Mainly used to detect switchover between deletion and insertion."
                            (if (= overleaf--doc-version -1)
                                "⟲"
                              "✓")
-                           (format ", %i" (length send-message-queue))
+                           (format ", %i" (length overleaf--send-message-queue))
                            (if overleaf-track-changes
                                ", t"
                              "")
