@@ -74,6 +74,9 @@ browser.")
   :type 'boolean
   :group 'overleaf-connection-mode)
 
+(defvar-local overleaf-auto-save nil
+  "Whether to auto-save the buffer each time a change is synced.")
+
 (defvar-local overleaf-project-id nil
   "The overleaf project id.
 
@@ -159,6 +162,7 @@ See `overleaf--message-timer'.")
         (add-file-local-variable 'overleaf-document-id overleaf-document-id)
         (add-file-local-variable 'overleaf-project-id overleaf-project-id)
         (add-file-local-variable 'overleaf-track-changes track-changes)
+        (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
         (overleaf--flush-edit-queue (current-buffer))
         (setq-local overleaf-track-changes track-changes)))))
 
@@ -207,7 +211,9 @@ See `overleaf--message-timer'.")
                   (overleaf--debug "Got update with version %s (buffer version %s)" version overleaf--doc-version)
                   (when (eq overleaf--edit-in-flight version)
                     (overleaf--debug "BINGO, we've been waiting for this.")
-                    (setq overleaf--edit-in-flight nil))
+                    (setq overleaf--edit-in-flight nil)
+                    (when (and (<= (length overleaf--send-message-queue) 1) overleaf-auto-save)
+                      (overleaf--save-buffer)))
 
                   (when (> version overleaf--doc-version)
                     (setq overleaf--doc-version version)
@@ -219,7 +225,16 @@ See `overleaf--message-timer'.")
                       (when-let* ((delete (plist-get op :d)))
                         (re-search-forward (regexp-quote delete) nil t)
                         (replace-match "")))
+                    (when overleaf-auto-save
+                      (overleaf--save-buffer))
                     (setq buffer-undo-list (memq nil buffer-undo-list)))))))))))))
+
+(defun overleaf--save-buffer ()
+  "Safely save the buffer."
+  (let ((overleaf--is-overleaf-change t))
+    (setq-local buffer-read-only t)
+    (save-buffer)
+    (setq-local buffer-read-only nil)))
 
 (defun overleaf--decode-utf8 (str)
   "Decode the weird overleaf utf8 decoding in STR.
@@ -238,6 +253,8 @@ This calls out to node.js for now."
     (setq-local overleaf--edit-queue '())
     (setq-local send-message-queue '())
     (websocket-close overleaf--websocket)
+    (when overleaf-auto-save
+      (overleaf--save-buffer))
     (setq-local overleaf--force-close nil)))
 
 (defun overleaf--on-close (ws)
@@ -308,6 +325,11 @@ This calls out to node.js for now."
   (overleaf--write-buffer-variables)
   (overleaf--update-modeline))
 
+(defun overleaf-toggle-auto-save ()
+  "Toggle track-changes feature change on overleaf."
+  (interactive)
+  (setq-local overleaf-auto-save (not overleaf-auto-save))
+  (overleaf--write-buffer-variables))
 
 (defun overleaf-connect ()
   "Connect to overleaf.
@@ -606,7 +628,8 @@ Interactively with no argument, this command toggles the mode."
   (list
    (overleaf--key "c" overleaf-connect)
    (overleaf--key "d" overleaf-disconnect)
-   (overleaf--key "t" overleaf-toggle-track-changes))
+   (overleaf--key "t" overleaf-toggle-track-changes)
+   (overleaf--key "s" overleaf-toggle-auto-save))
 
   (if overleaf-connection-mode
       (overleaf--init)

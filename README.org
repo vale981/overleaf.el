@@ -68,6 +68,8 @@ Calling ~overleaf-disconnect~ disconnects the current buffer from overleaf.
 The modeline will indicate the connection status, as well as the
 number of changes that have yet to be synced to overleaf and whether the track-changes feature is enabled: ~(O: [<connection status>, <number of changes>, <track changes status>])~.
 
+Calling ~overleaf-toggle-auto-save~ toggles auto-saving the buffer whenever a consistent state with overleaf is reached.
+
 *** Keybindings
 The keymap prefix can be customized with ~overleaf-keymap-prefix~ which defaults to ~C-c C-o~.
 
@@ -75,6 +77,7 @@ The available keybindings
   - =[prefix] c= - (re)-connect
   - =[prefix] d= - disconnect
   - =[prefix] t= - toggle track-changes
+  - =[prefix] s= - toggle auto-save
 
 ** Troubleshooting
 Rather verbose logging may be enabled by setting ~overleaf-debug~ to ~t~.
