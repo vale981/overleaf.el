@@ -197,6 +197,9 @@ See `overleaf--message-timer'.")
                        (name (plist-get message :name)))
 
              (pcase name
+               ("connectionRejected"
+                (warn "Overleaf connection error: %S" (plist-get message :args))
+                (overleaf-disconnect))
                ("otUpdateError"
                 (warn "Overleaf update error: %S" (plist-get message :args)))
                ("joinProjectResponse"
