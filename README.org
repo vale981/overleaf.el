@@ -38,6 +38,9 @@ or to a function that returns the cookie string. For example, the cookies can be
               (string-trim (buffer-string)))))
 #+end_src
 
+#+RESULTS:
+: #[nil ((with-temp-buffer (insert-file-contents (expand-file-name "~/.overleaf-cookies.gpg")) (string-trim (buffer-string)))) nil]
+
 Second, the ~overleaf-project-id~ and ~overleaf-document-id~ are
 required. These can most easily obtained by downloading the file to be
 edited from overleaf and inspecting the download URL which is of the
