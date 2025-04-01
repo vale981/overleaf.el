@@ -2,10 +2,10 @@
 ;; Copyright (C) 2020-2025 Valentin Boettcher
 
 
-;; Author: Shigeaki Nishina, Valentin Boettcher
-;; Maintainer: Valentin Boettcher <hiro at protagon.space>
-;; Created: May 11, 2024
-;; URL: https://github.com/vale981/py-vterm-interaction.el
+;; Author: Valentin Boettcher
+;; Maintainer: Valentin Boettcher <overleaf-connection at protagon.space>
+;; Created: March 18, 2025
+;; URL: https://github.com/vale981/overleaf-connection.el
 ;; Package-Requires: ((plz "0.9") (websocket "1.15"))
 ;; Version: 0.0.2
 ;; Keywords: latex, overleaf
