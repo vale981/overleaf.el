@@ -132,7 +132,7 @@ See `overleaf--message-timer'.")
 (defvar-local overleaf--mode-line ""
   "Contents of the mode-line indicator.")
 
-(defvar overleaf--buffer-ws-table (make-hash-table :test #'equal)
+(defvar overleaf--ws-url->buffer-table (make-hash-table :test #'equal)
   "A hash table associating web-sockets to buffers.")
 
 (defvar overleaf--buffer
@@ -249,41 +249,31 @@ This calls out to node.js for now."
     (call-process "node" nil t nil (concat (file-name-directory (symbol-file 'overleaf--decode-utf8)) "decode.js") str)
     (buffer-string)))
 
-(defun overleaf-disconnect-internal (ws)
-  "Disconnect from the websocket WS."
-  (overleaf--debug "Disconnecting %s" ws)
-  (setq-local overleaf--force-close t)
-  (setq-local overleaf--edit-queue '())
-  (setq-local overleaf--send-message-queue '())
-  (websocket-close ws)
-  (when overleaf-auto-save
-    (overleaf--save-buffer))
-  (setq-local overleaf--force-close nil)
-  (remhash ws overleaf--buffer-ws-table))
-
 (defun overleaf-disconnect ()
   "Disconnect from overleaf."
   (interactive)
-  (maphash
-   (lambda (ws buffer)
-     (when (equal buffer (current-buffer))
-       ws))
-   overleaf--buffer-ws-table)
-
   (when overleaf--websocket
-    (overleaf-disconnect-internal overleaf--websocket)))
+    (overleaf--debug "Disconnecting")
+    (setq-local overleaf--force-close t)
+    (setq-local overleaf--edit-queue '())
+    (setq-local overleaf--send-message-queue '())
+    (websocket-close overleaf--websocket)
+    (when overleaf-auto-save
+      (overleaf--save-buffer))
+    (setq-local overleaf--force-close nil)
+    (remhash overleaf--websocket overleaf--ws-url->buffer-table)))
 
 (defun overleaf--on-close (ws)
   "Handle the closure of the websocket WS."
   (let ((overleaf--buffer
-         (gethash (websocket-url ws) overleaf--buffer-ws-table)))
+         (gethash (websocket-url ws) overleaf--ws-url->buffer-table)))
     (with-current-buffer overleaf--buffer
       (when overleaf--websocket
         (overleaf--debug "Websocket closed.")
         (setq-local buffer-read-only nil)
         (cancel-timer overleaf--message-timer)
         (cancel-timer overleaf--flush-edit-queue-timer)
-        (remhash (websocket-url ws) overleaf--buffer-ws-table)
+        (remhash (websocket-url ws) overleaf--ws-url->buffer-table)
         (setq-local overleaf--websocket nil)
         (overleaf--update-modeline)
         (unless overleaf--force-close
@@ -296,21 +286,21 @@ This calls out to node.js for now."
 (defun overeleaf--on-message (ws frame)
   "Handle a message received from websocket WS with contents FRAME."
   (let ((overleaf--buffer
-         (gethash (websocket-url ws) overleaf--buffer-ws-table)))
+         (gethash (websocket-url ws) overleaf--ws-url->buffer-table)))
     (overleaf--debug "Got message %S" frame)
     (overleaf--parse-message ws (websocket-frame-text frame))))
 
 (defun overleaf--on-open (_websocket)
   "Handle the open even of the web-socket _WEBSOCKET."
   (let ((overleaf--buffer
-         (gethash (websocket-url _websocket) overleaf--buffer-ws-table)))
+         (gethash (websocket-url _websocket) overleaf--ws-url->buffer-table)))
 
     (with-current-buffer overleaf--buffer
       (overleaf--update-modeline)
 
-      (add-hook 'after-change-functions #'overleaf--after-change-function nil t)
-      (add-hook 'before-change-functions #'overleaf--before-change-function nil t)
-      (add-hook 'kill-buffer-hook #'overleaf-disconnect nil t)
+      (add-hook 'after-change-functions #'overleaf--after-change-function nil :local)
+      (add-hook 'before-change-functions #'overleaf--before-change-function nil :local)
+      (add-hook 'kill-buffer-hook #'overleaf-disconnect nil :local)
 
       (setq-local
        overleaf--message-timer
@@ -394,7 +384,7 @@ file."
                            :on-open #'overleaf--on-open
                            :custom-header-alist `(("Cookie" . ,cookies)))))
              overleaf--buffer
-             overleaf--buffer-ws-table)
+             overleaf--ws-url->buffer-table)
             (overleaf--update-modeline))))
     (error "Please set `overleaf-cookies`")))
 
