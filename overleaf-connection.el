@@ -37,10 +37,11 @@
 (require 'plz)
 
 ;;; Code:
-(defcustom overleaf-keymap-prefix "C-c C-o"
-  "The prefix for dotcrafter-mode key bindings."
-  :type 'string
-  :group 'overleaf-connection-mode)
+(eval-and-compile
+  (defcustom overleaf-keymap-prefix "C-c C-o"
+    "The prefix for dotcrafter-mode key bindings."
+    :type 'string
+    :group 'overleaf-connection-mode))
 
 (defvar overleaf-cookies nil
   "The overleaf session cookies.
