@@ -248,18 +248,29 @@ This calls out to node.js for now."
     (call-process "node" nil t nil (concat (file-name-directory (symbol-file 'overleaf--decode-utf8)) "decode.js") str)
     (buffer-string)))
 
+(defun overleaf-disconnect-internal (ws)
+  "Disconnect from the websocket WS."
+  (overleaf--debug "Disconnecting %s" ws)
+  (setq-local overleaf--force-close t)
+  (setq-local overleaf--edit-queue '())
+  (setq-local overleaf--send-message-queue '())
+  (websocket-close ws)
+  (when overleaf-auto-save
+    (overleaf--save-buffer))
+  (setq-local overleaf--force-close nil)
+  (remhash ws overleaf--buffer-ws-table))
+
 (defun overleaf-disconnect ()
   "Disconnect from overleaf."
   (interactive)
+  (maphash
+   (lambda (ws buffer)
+     (when (equal buffer (current-buffer))
+       ws))
+   overleaf--buffer-ws-table)
+
   (when overleaf--websocket
-    (overleaf--debug "Disconnecting")
-    (setq-local overleaf--force-close t)
-    (setq-local overleaf--edit-queue '())
-    (setq-local overleaf--send-message-queue '())
-    (websocket-close overleaf--websocket)
-    (when overleaf-auto-save
-      (overleaf--save-buffer))
-    (setq-local overleaf--force-close nil)))
+    (overleaf-disconnect-internal overleaf--websocket)))
 
 (defun overleaf--on-close (ws)
   "Handle the closure of the websocket WS."
