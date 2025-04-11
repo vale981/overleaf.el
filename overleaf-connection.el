@@ -471,7 +471,7 @@ Version: 2024-04-03"
         (overleaf--overleaf-queue-current-change)
         (when (and overleaf--websocket (websocket-openp overleaf--websocket) overleaf--edit-queue)
           (setq-local buffer-read-only t)
-          (overleaf--debug "======> FLUSH")
+          (overleaf--debug "======> FLUSH %i" overleaf--doc-version)
           (overleaf--queue-message
            (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":%s%s,\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
                    sequence-id
@@ -502,7 +502,7 @@ Version: 2024-04-03"
 (defun overleaf--after-change-function (begin end length)
   "The after change hook that detects a change in region BEGIN - END of length LENGTH to be sent to overleaf."
   (let ((overleaf--buffer (current-buffer)))
-    (overleaf--debug "after %i %i %s %S" begin end length overleaf--last-change-type)
+    (overleaf--debug "after (%i %i) %i (%i %i) %S" begin end length overleaf--last-change-begin overleaf--last-change-end overleaf--last-change-type)
     (unless overleaf--is-overleaf-change
       (let ((new (buffer-substring-no-properties begin end)))
         ;; the before change hook tends to lie about the end of the region
@@ -517,23 +517,27 @@ Version: 2024-04-03"
             (cond
              (empty-before
               (let ((begin-matches (= begin overleaf--last-change-end))
-                    (end-matches (= end overleaf--last-change-begin)))
-                (overleaf--debug "insert \"%s\"" new)
+                    (end-matches (= begin overleaf--last-change-begin)))
+                (overleaf--debug "insert \"%s\" %S" new overleaf--last-change-begin)
 
                 (if (or (not overleaf--last-change-type) (eq overleaf--last-change-type :d) (not (or begin-matches end-matches)))
                     (progn
+                      (overleaf--debug "looks like a new insert!")
+
                       (setq overleaf--last-change-type :i)
                       (setq overleaf--last-change-end end)
                       (setq overleaf--last-change-begin begin))
-
                   (setq overleaf--last-change-type :i)
 
                   ;; extend
                   (cond
                    (begin-matches
+                    (overleaf--debug "Extending right to %s" end)
                     (setq overleaf--last-change-end end))
                    (end-matches
-                    (setq overleaf--last-change-begin begin))))))
+                    (overleaf--debug "Extending left to %s" end)
+                    (setq overleaf--last-change-begin begin)
+                    (setq overleaf--last-change-end (+ overleaf--last-change-end (- end begin))))))))
              (empty-after
               (overleaf--debug "delete")
 
@@ -579,6 +583,7 @@ Version: 2024-04-03"
 Mainly used to detect switchover between deletion and insertion."
   (unless overleaf--is-overleaf-change
     (let ((overleaf--buffer (current-buffer)))
+      (overleaf--debug "before (%i %i) (%i %i)" begin end overleaf--last-change-begin overleaf--last-change-end)
       (setq-local overleaf--before-change (buffer-substring-no-properties begin end))
       (setq-local overleaf--before-change-begin begin)
       (setq-local overleaf--before-change-end end)
@@ -590,10 +595,12 @@ Mainly used to detect switchover between deletion and insertion."
                     (= end overleaf--last-change-end)))
            (and (= end begin) (or (eq overleaf--last-change-type :d)))
            (and (eq overleaf--last-change-type :i) (or (> end begin) (> (length overleaf--before-change) 0)))
-           (or (> (max (- end begin) (- overleaf--last-change-end overleaf--last-change-begin))
-                  10)))
+           ;; (or (> (max (- end begin) (- overleaf--last-change-end overleaf--last-change-begin))
+           ;;        10))
+           )
         (overleaf--debug "Edit type switchover --> flushing edit queue %s" overleaf--edit-queue)
-        (overleaf--flush-edit-queue overleaf--buffer)))))
+        (overleaf--overleaf-queue-current-change)
+        (overleaf--flush-edit-queue (current-buffer))))))
 
 (defun overleaf--update-modeline ()
   "Update the modeline string to reflect the current connection status."
@@ -613,7 +620,6 @@ Mainly used to detect switchover between deletion and insertion."
                  "[ ]")
                ")"))
   (force-mode-line-update t))
-
 
 (defun overleaf--init ()
   "Set up the `overleaf-connection-mode`.
