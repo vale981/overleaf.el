@@ -1,4 +1,8 @@
-* Overleaf Connection Mode
+:PROPERTIES:
+:ID:       9d694771-66a1-46dc-873a-858289333e3d
+:END:
+#+title: Overleaf Connection Mode
+
 This packages provides ~overleaf-connection-mode~ that allows to
 live-edit $\LaTeX$ files on [[https://github.com/overleaf/overleaf][overleaf]].
 
@@ -15,7 +19,8 @@ load path and ~(require 'overleaf-connection)~. You can also use
 #+end_src
 
 *At the moment this package needs node.js to decode the weird unicode encoding that overleaf uses. I'm working on fixing that :)
-** Usage
+
+* Usage
 Two pieces of data are required to edit a document on overleaf.
 First, there are the session cookies which are most easily obtained
 through the browser developer tools. Simply open the overleaf document
@@ -73,7 +78,7 @@ number of changes that have yet to be synced to overleaf and whether the track-c
 
 Calling ~overleaf-toggle-auto-save~ toggles auto-saving the buffer whenever a consistent state with overleaf is reached.
 
-*** Keybindings
+** Keybindings
 The keymap prefix can be customized with ~overleaf-keymap-prefix~ which defaults to ~C-c C-o~.
 
 The available keybindings
@@ -82,11 +87,11 @@ The available keybindings
   - =[prefix] t= - toggle track-changes
   - =[prefix] s= - toggle auto-save
 
-** Troubleshooting
+* Troubleshooting
 Rather verbose logging may be enabled by setting ~overleaf-debug~ to ~t~.
 The log message will be collected in a buffer =*overleaf-[document-id]*=.
 
 Feel free to open an issue providing this log.
 
-** To-do
+* To-do
 ** TODO indicate cursors of other users

@@ -7,7 +7,7 @@
 ;; Created: March 18, 2025
 ;; URL: https://github.com/vale981/overleaf-connection.el
 ;; Package-Requires: ((plz "0.9") (websocket "1.15"))
-;; Version: 0.0.2
+;; Version: 0.0.3
 ;; Keywords: latex, overleaf
 
 ;; This file is not part of GNU Emacs.
@@ -364,7 +364,8 @@ file."
                  (ws-id
                   (car (string-split
                         (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" overleaf-url overleaf-project-id)
-                          :headers `(("Cookie" . ,cookies))) ":"))))
+                          :headers `(("Cookie" . ,cookies)
+                                     ("Origin" . ,overleaf-url))) ":"))))
 
             (overleaf--debug "Connecting %s %s" overleaf-project-id overleaf-document-id)
 
@@ -387,7 +388,8 @@ file."
                            :on-message #'overeleaf--on-message
                            :on-close #'overleaf--on-close
                            :on-open #'overleaf--on-open
-                           :custom-header-alist `(("Cookie" . ,cookies)))))
+                           :custom-header-alist `(("Cookie" . ,cookies)
+                                                  ("Origin" . ,overleaf-url)))))
              overleaf--buffer
              overleaf--ws-url->buffer-table)
             (overleaf--update-modeline))))
