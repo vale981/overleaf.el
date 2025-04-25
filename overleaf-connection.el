@@ -6,7 +6,7 @@
 ;; Maintainer: Valentin Boettcher <overleaf-connection at protagon.space>
 ;; Created: March 18, 2025
 ;; URL: https://github.com/vale981/overleaf-connection.el
-;; Package-Requires: ((plz "0.9") (websocket "1.15"))
+;; Package-Requires: ((plz "0.9") (websocket "1.15") (webdriver "0.1"))
 ;; Version: 0.0.3
 ;; Keywords: latex, overleaf
 
@@ -50,10 +50,33 @@ Can a string or function that returns a string containing the overleaf
 authentication cookies.
 
 For example the variable can be bound to a function that loads the
-cookies from a gpg encrypted file.
+cookies from a gpg encrypted file. See `overleaf-read-cookies-from-file`.
 
 The cookies are most easily obtained from the developer tools in the
 browser.")
+
+(defun overleaf-read-cookies-from-file (file)
+  "Return a cookie saving function to load the cookie-string from FILE.
+To be used with `overleaf-cookies`."
+  #'(lambda ()
+      (with-temp-buffer
+        (insert-file-contents (expand-file-name file))
+        (string-trim (buffer-string)))))
+
+(defvar overleaf-save-cookies #'(lambda (cookies)
+                                  (setq overleaf-cookies cookies))
+  "A function (lambda) that stores the session cookies.
+The function receives a string containing the session cookies and stores
+in a way that `overleaf-cookies` can access it.  The default
+implementation simply sets `overleaf-cookies` to the string value.
+Another possibility is to store them into a gpg encrypted file.  See
+`overleaf-save-cookies-to-file`.")
+
+(defun overleaf-save-cookies-to-file (file)
+  "Return a cookie saving function to save the cookie-string to FILE.
+To be used with `overleaf-save-cookies`."
+  #'(lambda (cookies)
+      (write-region cookies nil (expand-file-name file))))
 
 (defcustom overleaf-url "https://www.overleaf.com"
   "The url of the overleaf server."
@@ -150,6 +173,66 @@ See `overleaf--message-timer'.")
             (insert "\n")
             (setq buffer-read-only t)))
       (apply #'warn format-string args))))
+
+(defun overleaf-get-cookies ()
+  "Use selenium webdriver to log into overleaf and obtain the necessary cookies.
+After running this command, wait for the browser-window to pop up and
+for the login page to load.  Note that if the cookies are still valid,
+the login page may not be shown and this command terminates without user input.
+
+Requires `geckodriver` (see
+https://github.com/mozilla/geckodriver/releases) to be installed."
+  (interactive)
+  (require 'webdriver)
+  (require 'webdriver-firefox)
+
+  (unless (and (boundp 'overleaf-cookies)
+               (boundp 'overleaf-save-cookies) overleaf-cookies overleaf-save-cookies)
+    (user-error "Both overleaf-cookies and overleaf-save-cookies need to be set."))
+  (let ((session (make-instance 'webdriver-session))
+        (overleaf-url (string-trim (string-trim overleaf-url) "" "/")))
+    (condition-case nil
+        (progn
+          (webdriver-session-start session)
+          (webdriver-goto-url session overleaf-url)
+
+          ;; might as well be already logged in
+          (dolist (cookie (string-split (overleaf--get-cokies) ";"))
+            (pcase-let ((`(,name ,value) (string-split cookie "=")))
+              (webdriver-add-cookie session `(:name ,(string-trim name) :value ,(string-trim value) :domain "overleaf.com"))))
+
+          (webdriver-goto-url session (concat overleaf-url "/login"))
+          (message "Log in now...")
+
+          (let ((not-logged-in t)
+                (selector (make-instance 'webdriver-by
+                                         :strategy "xpath"
+                                         :selector "//button[@id='new-project-button-sidebar']")))
+            (while not-logged-in
+              (condition-case nil
+                  (progn
+                    (webdriver-find-element session selector)
+                    (setq not-logged-in nil))
+                (error (sleep-for 1)))))
+
+          (let* ((first-project
+                  (webdriver-find-element
+                   session
+                   (make-instance 'webdriver-by
+                                  :strategy "xpath"
+                                  :selector "//tr/td/a")))
+                 (first-project-path (webdriver-get-element-attribute session first-project "href")))
+            (webdriver-goto-url session (concat overleaf-url first-project-path))
+            (let ((cookies
+                   (webdriver-get-all-cookies session)))
+              (funcall overleaf-save-cookies
+                       (substring (apply #'concat
+                                         (mapcar #'(lambda (cookie)
+                                                     (format "%s=%s; " (alist-get 'name cookie) (alist-get 'value cookie)))
+                                                 cookies))
+                                  0 -2)))))
+      (quit (webdriver-session-stop session)))
+    (webdriver-session-stop session)))
 
 (defun overleaf--connected-p ()
   "Return t if the buffer is connected to overleaf."

@@ -20,40 +20,45 @@ load path and ~(require 'overleaf-connection)~. You can also use
 
 *At the moment this package needs node.js to decode the weird unicode encoding that overleaf uses. I'm working on fixing that :)
 
-* Usage
-Two pieces of data are required to edit a document on overleaf.
-First, there are the session cookies which are most easily obtained
-through the browser developer tools. Simply open the overleaf document
+* Setting Up
+** Getting the Session Cookies
+First, there are the session cookies which can be obtained either
+through executing the command ~M-x overleaf-get-cookies~ or through the
+developer tools in your favorite browser.
+
+For the former option the [[https://github.com/mozilla/geckodriver][Mozilla gecko driver]] must be installed and
+the variable ~overleaf-save-cookies~ must be set to a function that
+receives a string containing the cookies and saving it either directly
+into ~overleaf-cookies~ via ~setq~ (that's the default) or stores it by
+some other means. In the latter case the variable ~overleaf-cookies~
+must be assigned a function that returns the cookie string. For
+example, the cookies can be stored and loaded from a =gpg= encrypted
+file:
+#+begin_src elisp
+  (let ((cookie-file "~/.overleaf-cookies.gpg"))
+      (setq overleaf-save-cookies
+            (overleaf-save-cookies-to-file cookie-file))
+      (setq overleaf-cookies
+            (overleaf-read-cookies-from-file cookie-file)))
+#+end_src
+
+
+If the above doesn't work for you, simply open the overleaf document
 you want to edit and enable network monitoring. Select any request
 made to the overleaf domain and get the contents of the =Cookie= request
 header. It should have contents like:
 #+begin_src text
   overleaf_session2=[redacted]; __stripe_mid=[redacted]; GCLB=[redacted]; __stripe_sid=redacted
 #+end_src
-The variable ~overleaf-cookies~ may either be set to
+
+Then set ~overleaf-cookies~ to the cookies string
 #+begin_src elisp
   (setq overleaf-cookies "overleaf_session2=[redacted]; __stripe_mid=[redacted]; GCLB=[redacted]; __stripe_sid=redacted")
 #+end_src
-or to a function that returns the cookie string. For example, the cookies can be loaded from a =gpg= encrypted file:
-#+begin_src elisp
-  (setq overleaf-cookies
-        #'(lambda ()
-            (with-temp-buffer
-              (insert-file-contents (expand-file-name "~/.overleaf-cookies.gpg"))
-              (string-trim (buffer-string)))))
-#+end_src
+or store the cookies by any means you'd like (see above) and set
+~overleaf-cookies~ to a function that returns the cookie string.
 
-#+RESULTS:
-: #[nil ((with-temp-buffer (insert-file-contents (expand-file-name "~/.overleaf-cookies.gpg")) (string-trim (buffer-string)))) nil]
-
-Second, the ~overleaf-project-id~ and ~overleaf-document-id~ are
-required. These can most easily obtained by downloading the file to be
-edited from overleaf and inspecting the download URL which is of the
-shape
-#+begin_src text
-https://[overleaf-domain]/project/[project-id]
-#+end_src
-
+** Project ID and Document ID
 Once the cookies are set, visit a buffer that you would like to sync
 with overleaf (this buffer will be cleared). This buffer may or may
 not be backed by a file. Calling ~overleaf-connect~ will connect this
@@ -65,6 +70,14 @@ so that re-connection is simplified at later times. *The contents of
 the buffer will be overwritten by the contents of the file on overleaf
 and the undo history will be reset.*
 
+The ids can most easily obtained by downloading the file to be
+edited from overleaf and inspecting the download URL which is of the
+form
+#+begin_src text
+https://[overleaf-domain]/project/[project-id]
+#+end_src
+
+* Usage
 The overleaf instance can be customized by changing the ~overleaf-url~
 variable.
 
