@@ -185,7 +185,7 @@ See `overleaf--message-timer'.")
   (let ((domain-parts (string-split (overleaf--url) "\\.")))
     (string-join (last domain-parts 2) ".")))
 
-(defun overleaf-get-cookies (url)
+(defun overleaf-authenticate (url)
   "Use selenium webdriver to log into overleaf and obtain the necessary cookies.
 After running this command, wait for the browser-window to pop up and
 for the login page to load.  Note that if the cookies are still valid,

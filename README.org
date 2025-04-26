@@ -23,7 +23,7 @@ load path and ~(require 'overleaf-connection)~. You can also use
 * Setting Up
 ** Getting the Session Cookies
 First, there are the session cookies which can be obtained either
-through executing the command ~M-x overleaf-get-cookies~ or through the
+through executing the command ~M-x overleaf-authenticate~ or through the
 developer tools in your favorite browser.
 
 For the former option the [[https://github.com/mozilla/geckodriver][Mozilla gecko driver]] must be installed and
