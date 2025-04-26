@@ -470,6 +470,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                         (setq-local overleaf-document-id
                                     (webdriver-get-element-attribute session selected "data-file-id")))
                     (webdriver-error (sleep-for 1)))))
+              (message "%s %s %s" overleaf-url overleaf-project-id overleaf-document-id)
               (overleaf-connect))
           (webdriver-session-stop session))))))
 
@@ -697,7 +698,8 @@ Version: 2024-04-03"
               (setq-local overleaf--last-change-type :d)
               (setq-local overleaf--deletion-buffer overleaf--before-change)
               (overleaf--debug "====> Claiming to have deleted %s" overleaf--before-change)
-              (overleaf--debug "====> buffer is now %s" (buffer-substring-no-properties begin end))
+              (when (< end (point-max))
+                (overleaf--debug "====> buffer is now %s" (buffer-substring-no-properties begin end)))
 
               (overleaf--overleaf-queue-current-change)
               (overleaf--flush-edit-queue overleaf--buffer)
