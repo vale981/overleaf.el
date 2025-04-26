@@ -32,7 +32,8 @@
 ;; Provides a minor mode that allows to sync the changes of a buffer
 ;; to an overleaf instance (https://github.com/overleaf/overleaf).
 
-
+(require 'webdriver)
+(require 'webdriver-firefox)
 (require 'websocket)
 (require 'plz)
 
@@ -182,7 +183,9 @@ See `overleaf--message-timer'.")
   "Set the cookies in the webdriver session SESSION."
   (dolist (cookie (string-split (overleaf--get-cokies) ";"))
     (pcase-let ((`(,name ,value) (string-split cookie "=")))
-      (webdriver-add-cookie session `(:name ,(string-trim name) :value ,(string-trim value) :domain ,(replace-regexp-in-string "^https?://\\(www\\.\\)?" "" (overleaf--url) nil 'literal))))))
+      (webdriver-add-cookie session `(:name ,(string-trim name) :value ,(string-trim value) :domain
+                                            (let ((domain-parts (string-split (overleaf--url) "\\.")))
+                                              (string-join (last domain-parts 2) ".")))))))
 
 (defun overleaf-get-cookies ()
   "Use selenium webdriver to log into overleaf and obtain the necessary cookies.
@@ -193,8 +196,6 @@ the login page may not be shown and this command terminates without user input.
 Requires `geckodriver` (see
 https://github.com/mozilla/geckodriver/releases) to be installed."
   (interactive)
-  (require 'webdriver)
-  (require 'webdriver-firefox)
 
   (unless (and (boundp 'overleaf-cookies)
                (boundp 'overleaf-save-cookies) overleaf-cookies overleaf-save-cookies)
