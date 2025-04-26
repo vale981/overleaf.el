@@ -83,6 +83,10 @@ To be used with `overleaf-save-cookies`."
   :type 'string
   :group 'overleaf-connection-mode)
 
+(defun overleaf--url ()
+  "Return a sanitized version of the url without trailing slash."
+  (string-trim (string-trim overleaf-url) "" "/"))
+
 (defcustom overleaf-flush-interval .5
   "The idle-timer delay to flush the edit queue."
   :type 'float
@@ -174,6 +178,12 @@ See `overleaf--message-timer'.")
             (setq buffer-read-only t)))
       (apply #'warn format-string args))))
 
+(defun overleaf--webdriver-set-cookies (session)
+  "Set the cookies in the webdriver session SESSION."
+  (dolist (cookie (string-split (overleaf--get-cokies) ";"))
+    (pcase-let ((`(,name ,value) (string-split cookie "=")))
+      (webdriver-add-cookie session `(:name ,(string-trim name) :value ,(string-trim value) :domain ,(replace-regexp-in-string "^https?://\\(www\\.\\)?" "" (overleaf--url) nil 'literal))))))
+
 (defun overleaf-get-cookies ()
   "Use selenium webdriver to log into overleaf and obtain the necessary cookies.
 After running this command, wait for the browser-window to pop up and
@@ -188,20 +198,18 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
 
   (unless (and (boundp 'overleaf-cookies)
                (boundp 'overleaf-save-cookies) overleaf-cookies overleaf-save-cookies)
-    (user-error "Both overleaf-cookies and overleaf-save-cookies need to be set."))
-  (let ((session (make-instance 'webdriver-session))
-        (overleaf-url (string-trim (string-trim overleaf-url) "" "/")))
-    (condition-case nil
+    (user-error "Both overleaf-cookies and overleaf-save-cookies need to be set"))
+
+  (let ((session (make-instance 'webdriver-session)))
+    (unwind-protect
         (progn
           (webdriver-session-start session)
-          (webdriver-goto-url session overleaf-url)
+          (webdriver-goto-url session (overleaf--url))
 
           ;; might as well be already logged in
-          (dolist (cookie (string-split (overleaf--get-cokies) ";"))
-            (pcase-let ((`(,name ,value) (string-split cookie "=")))
-              (webdriver-add-cookie session `(:name ,(string-trim name) :value ,(string-trim value) :domain "overleaf.com"))))
+          (overleaf--webdriver-set-cookies session)
 
-          (webdriver-goto-url session (concat overleaf-url "/login"))
+          (webdriver-goto-url session (concat (overleaf--url) "/login"))
           (message "Log in now...")
 
           (let ((not-logged-in t)
@@ -213,7 +221,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                   (progn
                     (webdriver-find-element session selector)
                     (setq not-logged-in nil))
-                (error (sleep-for 1)))))
+                (webdriver-error (sleep-for 1)))))
 
           (let* ((first-project
                   (webdriver-find-element
@@ -222,7 +230,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                                   :strategy "xpath"
                                   :selector "//tr/td/a")))
                  (first-project-path (webdriver-get-element-attribute session first-project "href")))
-            (webdriver-goto-url session (concat overleaf-url first-project-path))
+            (webdriver-goto-url session (concat (overleaf--url) first-project-path))
             (let ((cookies
                    (webdriver-get-all-cookies session)))
               (funcall overleaf-save-cookies
@@ -231,7 +239,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                                                      (format "%s=%s; " (alist-get 'name cookie) (alist-get 'value cookie)))
                                                  cookies))
                                   0 -2)))))
-      (quit (webdriver-session-stop session)))
+      (webdriver-session-stop session))
     (webdriver-session-stop session)))
 
 (defun overleaf--connected-p ()
@@ -425,6 +433,47 @@ This calls out to node.js for now."
   (setq-local overleaf-auto-save (not overleaf-auto-save))
   (overleaf--write-buffer-variables))
 
+
+(defun overleaf-auto-connect (url)
+  "Use selenium webdriver to connect to the project under URL.
+To use this, open a file for editing in overleaf in your browser.  Then,
+copy the url of the project and use it with this command.
+
+Requires `geckodriver` (see
+https://github.com/mozilla/geckodriver/releases) to be installed."
+  (interactive "sProject URL: ")
+  (require 'webdriver)
+  (require 'webdriver-firefox)
+
+  (save-match-data
+    (let ((match (string-match "^\\(.*\\)/project/\\([0-9a-z]+\\)$" url)))
+      (unless match
+        (user-error "Invalid project url"))
+      (setq-local
+       overleaf-url (match-string 1 url)
+       overleaf-project-id (match-string 2 url)
+       overleaf-document-id nil)
+      (let ((session (make-instance 'webdriver-session)))
+        (unwind-protect
+            (progn
+              (webdriver-session-start session)
+              (webdriver-goto-url session (overleaf--url))
+              (overleaf--webdriver-set-cookies session)
+              (webdriver-goto-url session url)
+
+              (let ((selector (make-instance 'webdriver-by
+                                             :strategy "xpath"
+                                             :selector "//li[@class='selected']/div")))
+                (while (not overleaf-document-id)
+                  (condition-case nil
+                      (let ((selected
+                             (webdriver-find-element session selector)))
+                        (setq-local overleaf-document-id
+                                    (webdriver-get-element-attribute session selected "data-file-id")))
+                    (webdriver-error (sleep-for 1)))))
+              (overleaf-connect))
+          (webdriver-session-stop session))))))
+
 (defun overleaf-connect ()
   "Connect to overleaf.
 Requires `overleaf-cookies' to be set.  Prompts for the
@@ -446,9 +495,9 @@ file."
           (let* ((cookies (overleaf--get-cokies))
                  (ws-id
                   (car (string-split
-                        (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" overleaf-url overleaf-project-id)
+                        (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" (overleaf--url) overleaf-project-id)
                           :headers `(("Cookie" . ,cookies)
-                                     ("Origin" . ,overleaf-url))) ":"))))
+                                     ("Origin" . ,(overleaf--url)))) ":"))))
 
             (overleaf--debug "Connecting %s %s" overleaf-project-id overleaf-document-id)
 
@@ -467,12 +516,12 @@ file."
                            (replace-regexp-in-string
                             "https" "wss"
                             (format "%s/socket.io/1/websocket/%s?projectId=%s&esh=1&ssp=1"
-                                    overleaf-url ws-id overleaf-project-id))
+                                    (overleaf--url) ws-id overleaf-project-id))
                            :on-message #'overeleaf--on-message
                            :on-close #'overleaf--on-close
                            :on-open #'overleaf--on-open
                            :custom-header-alist `(("Cookie" . ,cookies)
-                                                  ("Origin" . ,overleaf-url)))))
+                                                  ("Origin" . ,(overleaf--url))))))
              overleaf--buffer
              overleaf--ws-url->buffer-table)
             (overleaf--update-modeline))))
