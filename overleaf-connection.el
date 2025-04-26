@@ -239,8 +239,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                                                      (format "%s=%s; " (alist-get 'name cookie) (alist-get 'value cookie)))
                                                  cookies))
                                   0 -2)))))
-      (webdriver-session-stop session))
-    (webdriver-session-stop session)))
+      (webdriver-session-stop session))))
 
 (defun overleaf--connected-p ()
   "Return t if the buffer is connected to overleaf."

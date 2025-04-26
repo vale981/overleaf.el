@@ -115,3 +115,4 @@ Feel free to open an issue providing this log.
 
 * To-do
 ** TODO indicate cursors of other users
+** TODO maybe make the cookies file buffer local...
