@@ -84,10 +84,6 @@ To be used with `overleaf-save-cookies`."
   :type 'string
   :group 'overleaf-connection-mode)
 
-(defun overleaf--url ()
-  "Return a sanitized version of the url without trailing slash."
-  (string-trim (string-trim overleaf-url) "" "/"))
-
 (defcustom overleaf-flush-interval .5
   "The idle-timer delay to flush the edit queue."
   :type 'float
@@ -179,13 +175,22 @@ See `overleaf--message-timer'.")
             (setq buffer-read-only t)))
       (apply #'warn format-string args))))
 
+(defun overleaf--url ()
+  "Return a sanitized version of the url without trailing slash."
+  (string-trim (string-trim overleaf-url) "" "/"))
+
+(defun overleaf--cookie-domain ()
+  "Return the domain for which the cookies will be valid from the current value of `overleaf-url`."
+  (let ((domain-parts (string-split (overleaf--url) "\\.")))
+    (string-join (last domain-parts 2) ".")))
+
 (defun overleaf--webdriver-set-cookies (session)
   "Set the cookies in the webdriver session SESSION."
-  (dolist (cookie (string-split (overleaf--get-cokies) ";"))
-    (pcase-let ((`(,name ,value) (string-split cookie "=")))
-      (webdriver-add-cookie session `(:name ,(string-trim name) :value ,(string-trim value) :domain
-                                            (let ((domain-parts (string-split (overleaf--url) "\\.")))
-                                              (string-join (last domain-parts 2) ".")))))))
+  (let ((cookie-domain (overleaf--cookie-domain)))
+    (dolist (cookie (string-split (overleaf--get-cokies) ";"))
+      (pcase-let ((`(,name ,value) (string-split cookie "=")))
+        (webdriver-add-cookie session `(:name ,(string-trim name) :value ,(string-trim value) :domain
+                                              cookie-domain))))))
 
 (defun overleaf-get-cookies ()
   "Use selenium webdriver to log into overleaf and obtain the necessary cookies.
