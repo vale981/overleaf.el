@@ -186,7 +186,7 @@ See `overleaf--message-timer'.")
     (string-join (last domain-parts 2) ".")))
 
 (defun overleaf-authenticate (url)
-  "Use selenium webdriver to log into overleaf and obtain the necessary cookies.
+  "Use selenium webdriver to log into overleaf URL and obtain the necessary cookies.
 After running this command, wait for the browser-window to pop up and
 for the login page to load.  Note that if the cookies are still valid,
 the login page may not be shown and this command terminates without user input.
@@ -202,6 +202,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
     (user-error "Both overleaf-cookies and overleaf-save-cookies need to be set"))
 
   (setq-local overleaf-url url)
+  (message-box "Log in to overleaf and wait until the browser window closes.")
   (let ((session (make-instance 'webdriver-session)))
     (unwind-protect
         (let ((full-cookies (overleaf--get-full-cookies)))
@@ -209,16 +210,8 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
           (webdriver-goto-url session (concat (overleaf--url) "/login"))
           (message "Log in now...")
 
-          (let ((not-logged-in t)
-                (selector (make-instance 'webdriver-by
-                                         :strategy "xpath"
-                                         :selector "//button[@id='new-project-button-sidebar']")))
-            (while not-logged-in
-              (condition-case nil
-                  (progn
-                    (webdriver-find-element session selector)
-                    (setq not-logged-in nil))
-                (webdriver-error (sleep-for 1)))))
+          (overleaf--webdriver-wait-until-appears
+           (session "//button[@id='new-project-button-sidebar']" _))
 
           (let* ((first-project
                   (webdriver-find-element
@@ -470,6 +463,23 @@ This calls out to node.js for now."
   (setq-local overleaf-auto-save (not overleaf-auto-save))
   (overleaf--write-buffer-variables))
 
+(cl-defmacro overleaf--webdriver-wait-until-appears ((session xpath element-sym &optional (delay .1)) &rest body)
+  "Wait until an element matching XPATH is found in SESSION, bind it to ELEMENT-SYM and execute BODY."
+  (let ((not-found (gensym))
+        (sel-var (gensym)))
+    `(let ((,sel-var
+            (make-instance 'webdriver-by
+                           :strategy "xpath"
+                           :selector ,xpath))
+           (,not-found t))
+       (while ,not-found
+         (condition-case nil
+             (let ((,element-sym
+                    (webdriver-find-element ,session ,sel-var)))
+               (setq ,not-found nil)
+               ,@body)
+           (webdriver-error
+            (sleep-for ,delay)))))))
 
 (defun overleaf-find-file (url)
   "Use selenium webdriver to connect to the project under URL.
@@ -486,27 +496,29 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
 
   (setq-local overleaf-url url)
 
-  (message-box "Wait for the project list to load, open a project and select a file.")
+  (message-box "  1. Wait for the project list to load.
+  2. Select a project.
+  3. Wait for the project list to load and open a project.
+  4. Select the file you would like to edit in the file browser on the left.
+
+This message will self-destruct in 10 seconds!
+(Just kidding...)")
   (let ((session (make-instance 'webdriver-session)))
     (unwind-protect
         (progn
           (webdriver-session-start session)
-          (webdriver-goto-url session (overleaf--url))
+          (webdriver-goto-url session (concat (overleaf--url) "/favicon.svg"))
           (overleaf--webdriver-set-cookies session)
           (webdriver-goto-url session (overleaf--url))
 
-          (setq-local overleaf-document-id nil)
-          (let ((selector (make-instance 'webdriver-by
-                                         :strategy "xpath"
-                                         :selector "//li[@class='selected']/div")))
-            (while (not overleaf-document-id)
-              (condition-case nil
-                  (let ((selected
-                         (webdriver-find-element session selector)))
-                    (setq-local overleaf-document-id
-                                (webdriver-get-element-attribute session selected "data-file-id")))
-                (webdriver-error (sleep-for 1)))))
+          (overleaf--webdriver-wait-until-appears
+           (session "//div[@class='file-tree-inner']" file-list)
+           (webdriver-element-click session file-list))
 
+          (overleaf--webdriver-wait-until-appears
+           (session "//li[@class='selected']/div" selected)
+           (setq-local overleaf-document-id
+                       (webdriver-get-element-attribute session selected "data-file-id")))
           (let ((url (webdriver-get-current-url session)))
             (save-match-data
               (let ((match (string-match "^\\(.*\\)/project/\\([0-9a-z]+\\)$" url)))
