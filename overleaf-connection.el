@@ -77,7 +77,8 @@ Another possibility is to store them into a gpg encrypted file.  See
   "Return a cookie saving function to save the cookie-string to FILE.
 To be used with `overleaf-save-cookies`."
   #'(lambda (cookies)
-      (write-region cookies nil (expand-file-name file))))
+      (with-temp-file file
+        (insert cookies))))
 
 (defcustom overleaf-url "https://www.overleaf.com"
   "The url of the overleaf server."
@@ -184,15 +185,7 @@ See `overleaf--message-timer'.")
   (let ((domain-parts (string-split (overleaf--url) "\\.")))
     (string-join (last domain-parts 2) ".")))
 
-(defun overleaf--webdriver-set-cookies (session)
-  "Set the cookies in the webdriver session SESSION."
-  (let ((cookie-domain (overleaf--cookie-domain)))
-    (dolist (cookie (string-split (overleaf--get-cokies) ";"))
-      (pcase-let ((`(,name ,value) (string-split cookie "=")))
-        (webdriver-add-cookie session `(:name ,(string-trim name) :value ,(string-trim value) :domain
-                                              cookie-domain))))))
-
-(defun overleaf-get-cookies ()
+(defun overleaf-get-cookies (url)
   "Use selenium webdriver to log into overleaf and obtain the necessary cookies.
 After running this command, wait for the browser-window to pop up and
 for the login page to load.  Note that if the cookies are still valid,
@@ -200,21 +193,19 @@ the login page may not be shown and this command terminates without user input.
 
 Requires `geckodriver` (see
 https://github.com/mozilla/geckodriver/releases) to be installed."
-  (interactive)
+  (interactive
+   (list
+    (read-string "Overleaf URL: " (overleaf--url))))
 
   (unless (and (boundp 'overleaf-cookies)
                (boundp 'overleaf-save-cookies) overleaf-cookies overleaf-save-cookies)
     (user-error "Both overleaf-cookies and overleaf-save-cookies need to be set"))
 
+  (setq-local overleaf-url url)
   (let ((session (make-instance 'webdriver-session)))
     (unwind-protect
-        (progn
+        (let ((full-cookies (overleaf--get-full-cookies)))
           (webdriver-session-start session)
-          (webdriver-goto-url session (overleaf--url))
-
-          ;; might as well be already logged in
-          (overleaf--webdriver-set-cookies session)
-
           (webdriver-goto-url session (concat (overleaf--url) "/login"))
           (message "Log in now...")
 
@@ -239,13 +230,29 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
             (webdriver-goto-url session (concat (overleaf--url) first-project-path))
             (let ((cookies
                    (webdriver-get-all-cookies session)))
+              (setf (alist-get (overleaf--cookie-domain) full-cookies nil nil #'string=)
+                    (list
+                     (substring (apply #'concat
+                                       (mapcar #'(lambda (cookie)
+                                                   (format "%s=%s; " (alist-get 'name cookie) (alist-get 'value cookie)))
+                                               cookies))
+                                0 -2)
+                     (alist-get 'expiry (aref cookies 0))))
               (funcall overleaf-save-cookies
-                       (substring (apply #'concat
-                                         (mapcar #'(lambda (cookie)
-                                                     (format "%s=%s; " (alist-get 'name cookie) (alist-get 'value cookie)))
-                                                 cookies))
-                                  0 -2)))))
+                       (prin1-to-string full-cookies)))))
       (webdriver-session-stop session))))
+
+(defun overleaf--webdriver-set-cookies (session)
+  "Set the cookies in the webdriver session SESSION."
+  (let ((cookie-domain (overleaf--cookie-domain))
+        (cookies (overleaf--get-cokies)))
+    (when cookies
+      (dolist (cookie (string-split cookies ";"))
+        (pcase-let ((`(,name ,value) (string-split cookie "=")))
+          (webdriver-add-cookie
+           session
+           `(:name ,(string-trim name) :value ,(string-trim value) :domain
+                   ,cookie-domain)))))))
 
 (defun overleaf--connected-p ()
   "Return t if the buffer is connected to overleaf."
@@ -417,13 +424,38 @@ This calls out to node.js for now."
            (cancel-timer overleaf--flush-edit-queue-timer))
          (run-with-idle-timer overleaf-flush-interval t #'overleaf--flush-edit-queue overleaf--buffer))))))
 
+(defun overleaf--get-full-cookies ()
+  "Load the association list domain<->cookies."
+  (condition-case err
+      (read
+       (if (or (functionp overleaf-cookies)
+               (fboundp 'overleaf-cookies))
+           (funcall overleaf-cookies)
+         overleaf-cookies))
+    (error
+     (message "Error while loading cookies: %s" (error-message-string err))
+     nil)))
+
+(defun overleaf--get-unix-time ()
+  "Get the current unix time in seconds."
+  (let ((current-time-list nil))
+    (pcase-let ((`(,ticks . ,hz) (current-time)))
+      (/ ticks hz))))
 
 (defun overleaf--get-cokies ()
   "Load the cookies either directly as a string from `overleaf-cookies` or by calling the function bound to the symbol."
-  (if (or (functionp overleaf-cookies)
-          (fboundp 'overleaf-cookies))
-      (funcall overleaf-cookies)
-    overleaf-cookies))
+  (if-let
+      ((cookies
+        (alist-get (overleaf--cookie-domain)
+                   (overleaf--get-full-cookies)
+                   nil nil #'string=)))
+      (pcase-let ((`(,value ,validity) cookies))
+        (if (or (not validity) (< (overleaf--get-unix-time) validity))
+            value
+          (user-error "Cookies for %s are expired.  Please refresh them using `overleaf-get-cookies` or manually"
+                      (overleaf--cookie-domain))))
+    (user-error "Cookies for %s are not set.  Please refresh them using `overleaf-get-cookies` or manually"
+                (overleaf--cookie-domain))))
 
 (defun overleaf-toggle-track-changes ()
   "Toggle track-changes feature change on overleaf."

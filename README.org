@@ -53,10 +53,14 @@ header. It should have contents like:
 
 Then set ~overleaf-cookies~ to the cookies string
 #+begin_src elisp
-  (setq overleaf-cookies "overleaf_session2=[redacted]; __stripe_mid=[redacted]; GCLB=[redacted]; __stripe_sid=redacted")
+  (setq overleaf-cookies
+        "((\"[overleaf domail (ovelerleaf.com)]\" \"overleaf_session2=[redacted]; __stripe_mid=[redacted]; GCLB=[redacted]; __stripe_sid=redacted\" [expiry time or nil]))")
 #+end_src
 or store the cookies by any means you'd like (see above) and set
-~overleaf-cookies~ to a function that returns the cookie string.
+~overleaf-cookies~ to a function that returns the cookie string. The
+cookie domain should only contain the part just before the TLD and the
+TLD. For example =www.overleaf.com= becomes =overleaf.com= (I don't make
+the rules...).
 
 ** Project ID and Document ID
 Once the cookies are set, visit a buffer that you would like to sync
@@ -83,7 +87,10 @@ https://[overleaf-domain]/project/[project-id]
 #+end_src
 
 * Usage
-After having set things up, just use ~overleaf-connect~ or ~overleaf-auto-connect~ to connect to overleaf (either from an empty buffer, or in a buffer with the appropriate file-local variables set from a previous session).
+After having set things up, just use ~overleaf-connect~ or
+~overleaf-auto-connect~ to connect to overleaf (either from an empty
+buffer, or in a buffer with the appropriate file-local variables set
+from a previous session).
 
 The overleaf instance can be customized by changing the ~overleaf-url~
 variable.
