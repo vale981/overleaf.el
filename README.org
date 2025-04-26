@@ -75,7 +75,7 @@ the buffer will be overwritten by the contents of the file on overleaf
 and the undo history will be reset.*
 
 Again, there are two ways to obtain the ~document-id~ and ~project-id~.
-First ~M-x overleaf-auto-connect~ will use the [[https://github.com/mozilla/geckodriver][Mozilla gecko driver]] to
+First ~M-x overleaf-find-file~ will use the [[https://github.com/mozilla/geckodriver][Mozilla gecko driver]] to
 automatically obtain the values. *Make sure that you have the file you
 want to edit in emacs opened in overleaf* if choosing this options.
 
@@ -88,7 +88,7 @@ https://[overleaf-domain]/project/[project-id]
 
 * Usage
 After having set things up, just use ~overleaf-connect~ or
-~overleaf-auto-connect~ to connect to overleaf (either from an empty
+~overleaf-find-file~ to connect to overleaf (either from an empty
 buffer, or in a buffer with the appropriate file-local variables set
 from a previous session).
 

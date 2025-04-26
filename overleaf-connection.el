@@ -471,46 +471,53 @@ This calls out to node.js for now."
   (overleaf--write-buffer-variables))
 
 
-(defun overleaf-auto-connect (url)
+(defun overleaf-find-file (url)
   "Use selenium webdriver to connect to the project under URL.
 To use this, open a file for editing in overleaf in your browser.  Then,
 copy the url of the project and use it with this command.
 
 Requires `geckodriver` (see
 https://github.com/mozilla/geckodriver/releases) to be installed."
-  (interactive "sProject URL: ")
+  (interactive
+   (list
+    (read-string "Overleaf URL: " (overleaf--url))))
   (require 'webdriver)
   (require 'webdriver-firefox)
 
-  (save-match-data
-    (let ((match (string-match "^\\(.*\\)/project/\\([0-9a-z]+\\)$" url)))
-      (unless match
-        (user-error "Invalid project url"))
-      (setq-local
-       overleaf-url (match-string 1 url)
-       overleaf-project-id (match-string 2 url)
-       overleaf-document-id nil)
-      (let ((session (make-instance 'webdriver-session)))
-        (unwind-protect
-            (progn
-              (webdriver-session-start session)
-              (webdriver-goto-url session (overleaf--url))
-              (overleaf--webdriver-set-cookies session)
-              (webdriver-goto-url session url)
+  (setq-local overleaf-url url)
 
-              (let ((selector (make-instance 'webdriver-by
-                                             :strategy "xpath"
-                                             :selector "//li[@class='selected']/div")))
-                (while (not overleaf-document-id)
-                  (condition-case nil
-                      (let ((selected
-                             (webdriver-find-element session selector)))
-                        (setq-local overleaf-document-id
-                                    (webdriver-get-element-attribute session selected "data-file-id")))
-                    (webdriver-error (sleep-for 1)))))
-              (message "%s %s %s" overleaf-url overleaf-project-id overleaf-document-id)
-              (overleaf-connect))
-          (webdriver-session-stop session))))))
+  (message-box "Wait for the project list to load, open a project and select a file.")
+  (let ((session (make-instance 'webdriver-session)))
+    (unwind-protect
+        (progn
+          (webdriver-session-start session)
+          (webdriver-goto-url session (overleaf--url))
+          (overleaf--webdriver-set-cookies session)
+          (webdriver-goto-url session (overleaf--url))
+
+          (setq-local overleaf-document-id nil)
+          (let ((selector (make-instance 'webdriver-by
+                                         :strategy "xpath"
+                                         :selector "//li[@class='selected']/div")))
+            (while (not overleaf-document-id)
+              (condition-case nil
+                  (let ((selected
+                         (webdriver-find-element session selector)))
+                    (setq-local overleaf-document-id
+                                (webdriver-get-element-attribute session selected "data-file-id")))
+                (webdriver-error (sleep-for 1)))))
+
+          (let ((url (webdriver-get-current-url session)))
+            (save-match-data
+              (let ((match (string-match "^\\(.*\\)/project/\\([0-9a-z]+\\)$" url)))
+                (unless match
+                  (user-error "Invalid project url"))
+                (setq-local
+                 overleaf-url (match-string 1 url)
+                 overleaf-project-id (match-string 2 url))
+                (message "%s %s" overleaf-project-id overleaf-document-id)
+                (overleaf-connect)))))
+      (webdriver-session-stop session))))
 
 (defun overleaf-connect ()
   "Connect to overleaf.
@@ -524,12 +531,12 @@ file."
   (if overleaf-cookies
       (let ((overleaf--buffer (current-buffer)))
         (with-current-buffer overleaf--buffer
-          (setq overleaf-project-id
-                (or overleaf-project-id
-                    (read-from-minibuffer "Overleaf project id: ")))
-          (setq overleaf-document-id
-                (or overleaf-document-id
-                    (read-from-minibuffer "Overleaf document id: ")))
+          (setq-local overleaf-project-id
+                      (or overleaf-project-id
+                          (read-from-minibuffer "Overleaf project id: ")))
+          (setq-local overleaf-document-id
+                      (or overleaf-document-id
+                          (read-from-minibuffer "Overleaf document id: ")))
           (let* ((cookies (overleaf--get-cokies))
                  (ws-id
                   (car (string-split
@@ -571,7 +578,6 @@ file."
 Pilfered from
 URL `http://xahlee.info/emacs/emacs/elisp_insert_random_number_string.html'
 Version: 2024-04-03"
-  (interactive )
   (let ((xcharset "abcdfghjkmnpqrstvwxyz23456789") xcount xvec)
     (setq xcount (length xcharset))
     (setq xvec (mapcar (lambda (_) (aref xcharset (random xcount))) (make-vector (if CountX CountX 5) 0)))
