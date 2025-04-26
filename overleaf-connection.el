@@ -7,7 +7,7 @@
 ;; Created: March 18, 2025
 ;; URL: https://github.com/vale981/overleaf-connection.el
 ;; Package-Requires: ((plz "0.9") (websocket "1.15") (webdriver "0.1"))
-;; Version: 0.0.4
+;; Version: 1.0.0
 ;; Keywords: latex, overleaf
 
 ;; This file is not part of GNU Emacs.
