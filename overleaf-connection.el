@@ -799,7 +799,7 @@ Mainly used to detect switchover between deletion and insertion."
   "Update the modeline string to reflect the current connection status."
   (setq-local overleaf--mode-line
               (concat
-               "(O: "
+               "(: "
                (if (websocket-openp overleaf--websocket)
                    (concat "["
                            (if (= overleaf--doc-version -1)
