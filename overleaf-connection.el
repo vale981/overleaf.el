@@ -163,6 +163,82 @@ See `overleaf--message-timer'.")
 (defvar overleaf--buffer nil
   "The current overleaf buffer (used in lexical binding).")
 
+(defvar-local overleaf--buffer-before-edit-queue ""
+  "The contents of the buffer before any edits were queued.")
+
+(defvar-local overleaf--last-good-state nil
+  "The last received overleaf update.")
+
+(defvar-local overleaf--history nil
+  "An list that relates version numbers to the buffer text at that version.
+Should only contain known-good states.  Is limited to length `overleaf-history-buffer-length'.")
+
+(defvar-local overleaf-history-buffer-length 50
+  "How many past versions of the buffer to keep in memory.")
+
+(defvar-local overleaf--recent-updates nil
+  "An alist that contains the `overleaf-update-buffer-length' recent updates.
+
+It has elements of the form `((from-version . (to-version . update)) ...)'.")
+
+(defvar-local overleaf-update-buffer-length 50
+  "How many past updates of the buffer to keep in memory.")
+
+(defvar overleaf--current-cookies nil
+  "The current cookies so we don't have to read them every time.")
+
+(defun overleaf--splice-into (list vers content &optional unique)
+  "Splice a new element CONTENT into a an alist LIST sorted by VERS.
+If unique is t the element with key VERS will be overwritten."
+  (let ((head-vers (car (car list))))
+    (if (or (not head-vers) (< vers head-vers))
+        `((,vers . ,content) ,@list)
+      (if (and unique (= vers head-vers))
+          `((,vers . ,content) ,@(cdr list))
+        `(,(car list) ,@(overleaf--splice-into (cdr list) vers content))))))
+
+
+(defun overleaf--truncate (list max-length)
+  "Remove the first elements from LIST to make it MAX-LENGTH long."
+  (nthcdr (max 0 (- (length list) max-length)) list))
+
+(defun overleaf--push-to-history (version)
+  "Push the contents of `overleaf--buffer' of VERSION to the local overleaf version history."
+  (when (and version overleaf--buffer)
+    (with-current-buffer overleaf--buffer
+      (setq-local overleaf--history (overleaf--splice-into overleaf--history version (buffer-string) t))
+      (setq-local overleaf--history (overleaf--truncate overleaf--history overleaf-history-buffer-length)))))
+
+(cl-defstruct overleaf--update
+  "An update received from or sent to overleaf.
+
+EDITS are a list of edit operations (inserts and deletes).
+FROM-VERSION is the buffer version being edited.
+TO-VERSION is the buffer version we hope to reach.
+HASH is a hash obtained from `overleaf--get-hash' after the edit is performed."
+  edits
+  from-version
+  to-version
+  hash)
+
+(defun overleaf--push-to-recent-updates (update)
+  "Splice the UPDATE of type `overleaf--update' into `overleaf--recent-updates'."
+  (let ((from-version (overleaf--update-from-version update))
+        (to-version (overleaf--update-to-version update)))
+    (when (and from-version to-version overleaf--buffer)
+      (with-current-buffer overleaf--buffer
+        (setq-local overleaf--recent-updates (overleaf--splice-into overleaf--recent-updates from-version (cons to-version update)))
+        (setq-local overleaf--recent-updates (overleaf--truncate overleaf--recent-updates overleaf-update-buffer-length))))))
+
+
+(defmacro overleaf--warn (&rest args)
+  "Print a warning message passing ARGS on to `display-warning'."
+  `(display-warning 'overleaf (format ,@args)))
+
+(defmacro overleaf--message (string &rest args)
+  "Print a message with format string STRING and arguments ARGS."
+  `(message  (format ,(concat "Overleaf: " string) ,@args)))
+
 (defun overleaf--debug (format-string &rest args)
   "Print a debug message with format string FORMAT-STRING and arguments ARGS."
   (when overleaf-debug
@@ -191,8 +267,13 @@ See `overleaf--message-timer'.")
        (message-box "Please install geckodriver or set the cookies / document and project id manually.")
      ,@body))
 
+(defun overleaf--set-version (vers)
+  "Set the buffer version to VERS."
+  (overleaf--debug "Setting buffer version to %s" vers)
+  (setq-local overleaf--doc-version vers))
+
 (defun overleaf-authenticate (url)
-  "Use selenium webdriver to log into overleaf URL and obtain the necessary cookies.
+  "Use selenium webdriver to log into overleaf URL and obtain the cookies.
 After running this command, wait for the browser-window to pop up and
 for the login page to load.  Note that if the cookies are still valid,
 the login page may not be shown and this command terminates without user input.
@@ -215,7 +296,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
          (let ((full-cookies (overleaf--get-full-cookies)))
            (webdriver-session-start session)
            (webdriver-goto-url session (concat (overleaf--url) "/login"))
-           (message "Log in now...")
+           (overleaf--message "Log in now...")
 
            (overleaf--webdriver-wait-until-appears
             (session "//button[@id='new-project-button-sidebar']" _))
@@ -289,7 +370,6 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
 
                        (version (1- (string-to-number (match-string 2 message))))
                        (overleaf--is-overleaf-change t))
-             (setq overleaf--doc-version version)
              (when doc
                (let ((point (point)))
                  (setq-local buffer-read-only nil)
@@ -297,7 +377,9 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                  (insert (overleaf--decode-utf8 (string-join (json-parse-string doc) "\n")))
                  (overleaf--write-buffer-variables)
                  (goto-char point)
-                 (setq buffer-undo-list nil)))))
+                 (setq buffer-undo-list nil))
+               (overleaf--set-version version)
+               (overleaf--push-to-history version))))
          (overleaf--update-modeline))
         ("5"
          (when message-raw
@@ -306,11 +388,12 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
 
              (pcase name
                ("connectionRejected"
-                (warn "Overleaf connection error: %S" (plist-get message :args))
+                (overleaf--warn "Connection error: %S" (plist-get message :args))
                 (overleaf-disconnect))
                ("otUpdateError"
                 (overleaf--debug "-------- Update ERROR")
-                (warn "Overleaf update error: %S" (plist-get message :args)))
+                (overleaf--warn "Update error %S" (car (plist-get message :args)))
+                (overleaf-connect))
                ("joinProjectResponse"
                 (websocket-send-text ws (format "5:2+::{\"name\":\"joinDoc\",\"args\":[\"%s\",{\"encodeRanges\":true}]}" overleaf-document-id)))
                ("serverPing"
@@ -318,29 +401,37 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                 (let ((res (concat id ":::" (json-encode `(:name "clientPong" :args ,(plist-get message :args))))))
                   (websocket-send-text ws res)))
                ("otUpdateApplied"
-                (let ((version (plist-get (car (plist-get message :args)) :v))
-                      (overleaf--is-overleaf-change t))
-                  (overleaf--debug "Got update with version %s (buffer version %s)" version overleaf--doc-version)
-                  (when (eq overleaf--edit-in-flight version)
-                    (overleaf--debug "BINGO, we've been waiting for this.")
-                    (setq overleaf--edit-in-flight nil)
-                    (when (and (<= (length overleaf--send-message-queue) 1) overleaf-auto-save)
-                      (overleaf--save-buffer)))
+                (let ((last-version (plist-get (car (plist-get message :args)) :lastV))
+                      (version (plist-get (car (plist-get message :args)) :v))
+                      (hash (plist-get (car (plist-get message :args)) :hash))
+                      (overleaf--is-overleaf-change t)
+                      (edits (when (plist-get message :args) (plist-get (car  (plist-get message :args)) :op))))
+                  (overleaf--debug "%S Got update with version %s->%s (buffer version %s) %S" (buffer-name) last-version version overleaf--doc-version message)
+                  (if (and overleaf--edit-in-flight (not last-version))
+                      (progn
+                        (overleaf--debug "%s BINGO, we've been waiting for this." (buffer-name))
+                        (setf (overleaf--update-to-version overleaf--edit-in-flight) version)
+                        (overleaf--push-to-recent-updates
+                         overleaf--edit-in-flight)
+                        (setq overleaf--edit-in-flight nil)
+                        (when (and (<= (length overleaf--send-message-queue) 1) overleaf-auto-save)
+                          (overleaf--save-buffer))
+                        (overleaf--send-queued-message (current-buffer)))
 
-                  (when (> version overleaf--doc-version)
-                    (setq overleaf--doc-version version)
-                    (undo-boundary)
-                    (save-excursion
-                      (dolist (op (plist-get (car  (plist-get message :args)) :op))
-                        (goto-char (1+ (plist-get op :p)))
-                        (when-let* ((insert (plist-get op :i)))
-                          (insert (overleaf--decode-utf8 insert)))
-                        (when-let* ((delete (plist-get op :d)))
-                          (re-search-forward (regexp-quote delete) nil t)
-                          (replace-match ""))))
-                    (when overleaf-auto-save
-                      (overleaf--save-buffer))
-                    (setq buffer-undo-list (memq nil buffer-undo-list)))))))))))))
+                    (overleaf--push-to-recent-updates
+                     (make-overleaf--update :from-version (or last-version (1- version)) :to-version version :edits edits :hash hash))
+                    (overleaf--apply-changes edits version last-version)
+                    (overleaf--set-version version)
+                    (when (and hash last-version
+                               (not overleaf--edit-in-flight)
+                               (not overleaf--send-message-queue)
+                               (= (- version last-version) 1)
+                               (not (string= (overleaf--get-hash) hash)))
+                      (overleaf--warn "Hash mismatch... reconnecting" (overleaf--get-hash) hash)
+                      (setq-local buffer-read-only t)
+                      (overleaf-connect)))
+                  (overleaf--set-version version)
+                  (overleaf--push-to-history version)))))))))))
 
 (defun overleaf--save-buffer ()
   "Safely save the buffer."
@@ -361,7 +452,7 @@ This calls out to node.js for now."
   "Disconnect from overleaf."
   (interactive)
   (when overleaf--websocket
-    (message "Overleaf Disconnecting")
+    (overleaf--message "Disconnecting")
     (setq-local overleaf--force-close t)
     (setq-local overleaf--edit-queue '())
     (setq-local overleaf--send-message-queue '())
@@ -377,7 +468,7 @@ This calls out to node.js for now."
          (gethash (websocket-url ws) overleaf--ws-url->buffer-table)))
     (with-current-buffer overleaf--buffer
       (when overleaf--websocket
-        (message "Overleaf websocket for document %s closed." overleaf-document-id)
+        (overleaf--message "Websocket for document %s closed." overleaf-document-id)
         (setq-local buffer-read-only nil)
         (cancel-timer overleaf--message-timer)
         (cancel-timer overleaf--flush-edit-queue-timer)
@@ -426,15 +517,18 @@ This calls out to node.js for now."
 
 (defun overleaf--get-full-cookies ()
   "Load the association list domain<->cookies."
-  (condition-case err
-      (read
-       (if (or (functionp overleaf-cookies)
-               (fboundp 'overleaf-cookies))
-           (funcall overleaf-cookies)
-         overleaf-cookies))
-    (error
-     (message "Error while loading cookies: %s" (error-message-string err))
-     nil)))
+  (if overleaf--current-cookies
+      overleaf--current-cookies
+    (condition-case err
+        (setq overleaf--current-cookies
+              (read
+               (if (or (functionp overleaf-cookies)
+                       (fboundp 'overleaf-cookies))
+                   (funcall overleaf-cookies)
+                 overleaf-cookies)))
+      (error
+       (overleaf--warn "Error while loading cookies: %s" (error-message-string err))
+       nil))))
 
 (defun overleaf--get-unix-time ()
   "Get the current unix time in seconds."
@@ -452,7 +546,7 @@ This calls out to node.js for now."
       (pcase-let ((`(,value ,validity) cookies))
         (if (or (not validity) (< (overleaf--get-unix-time) validity))
             value
-          (user-error "Cookies for %s are expired.  Please refresh them using `overleaf-get-cookies` or manually"
+          (user-error "Cookies for %s are expired.  Please refresh them using `overleaf-authenticate' or manually"
                       (overleaf--cookie-domain))))
     (user-error "Cookies for %s are not set.  Please refresh them using `overleaf-get-cookies` or manually"
                 (overleaf--cookie-domain))))
@@ -534,7 +628,6 @@ This message will self-destruct in 10 seconds!
                  (setq-local
                   overleaf-url (match-string 1 url)
                   overleaf-project-id (match-string 2 url))
-                 (message "%s %s" overleaf-project-id overleaf-document-id)
                  (overleaf-connect)))))
        (webdriver-session-stop session)))))
 
@@ -565,6 +658,9 @@ file."
 
             (overleaf--debug "Connecting %s %s" overleaf-project-id overleaf-document-id)
 
+            (setq-local overleaf--last-good-state nil)
+            (setq-local overleaf--history '())
+            (setq-local overleaf--recent-updates '())
             (setq-local overleaf--last-change-type nil)
             (setq-local overleaf--deletion-buffer "")
             (setq-local overleaf--edit-queue '())
@@ -620,9 +716,9 @@ Version: 2024-04-03"
   (overleaf--debug "====> adding %s to queue" edit)
   (setq overleaf--edit-queue (nconc overleaf--edit-queue (list edit))))
 
-(defun overleaf--queue-message (message version)
+(defun overleaf--queue-message (message)
   "Queue edit MESSAGE leading to buffer version VERSION to be send to overleaf."
-  (setq overleaf--send-message-queue (nconc overleaf--send-message-queue `((,message . ,version)))))
+  (setq overleaf--send-message-queue (nconc overleaf--send-message-queue (list message))))
 
 (defun overleaf--send-queued-message (&optional buffer)
   "Send a message from the edit message queue of BUFFER if there is no other edit in flight."
@@ -631,14 +727,36 @@ Version: 2024-04-03"
       (unless overleaf--edit-in-flight
         (with-current-buffer overleaf--buffer
           (when overleaf--send-message-queue
-            (when-let* ((message (car overleaf--send-message-queue)))
-              (setq-local overleaf--edit-in-flight (cdr message))
-              (websocket-send-text overleaf--websocket (car message))
+            (when-let* ((message (car overleaf--send-message-queue))
+                        (current-version (overleaf--queued-message-doc-version message))
+                        (next-version (1+ current-version)))
+              (websocket-send-text
+               overleaf--websocket
+               (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":%s%s,\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
+                       (overleaf--queued-message-sequence-id message)
+                       overleaf-document-id
+                       overleaf-document-id
+                       (json-encode (apply #'vector (overleaf--queued-message-edits message)))
+                       (if overleaf-track-changes
+                           (format ",\"meta\": {\"tc\":\"%s\"}"
+                                   (overleaf--random-string 18))
+                         "")
+                       next-version
+                       current-version
+                       (overleaf--queued-message-hash message)))
               (websocket-send-text
                overleaf--websocket
                (format
                 "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
                 (current-line) (current-column) overleaf-document-id))
+
+              (setq-local overleaf--edit-in-flight
+                          (make-overleaf--update
+                           :from-version current-version
+                           :to-version next-version
+                           :edits (overleaf--queued-message-edits message)
+                           :hash (overleaf--queued-message-hash message)))
+              (overleaf--debug "send %S %i %i" (buffer-name) current-version next-version)
               (setq overleaf--send-message-queue (cdr overleaf--send-message-queue)))))))))
 
 (defun overleaf--overleaf-queue-current-change (&optional buffer)
@@ -660,6 +778,67 @@ Version: 2024-04-03"
           (setq-local overleaf--last-change-end -1)
           (setq-local overleaf--deletion-buffer ""))))))
 
+
+(defun overleaf--apply-changes-internal (edits)
+  "Parse the edit list EDITS and apply them to the buffer."
+  (let ((overleaf--is-overleaf-change t))
+    (save-excursion
+      (dolist (op edits)
+        (goto-char (1+ (plist-get op :p)))
+        (when-let* ((insert (plist-get op :i)))
+          (insert (overleaf--decode-utf8 insert))
+          (setq buffer-undo-list (memq nil buffer-undo-list)))
+        (when-let* ((delete (plist-get op :d)))
+          (re-search-forward (regexp-quote delete) nil t)
+          (replace-match "")
+          (setq buffer-undo-list (memq nil buffer-undo-list))))))
+  (when overleaf-auto-save
+    (overleaf--save-buffer)))
+
+(defun overleaf--apply-changes (edits version last-version)
+  "Apply overleaf change EDITS on buffer from version LAST-VERSION to VERSION.
+
+If there are some updates to the buffer that haven't yet been
+acknowledged by overleaf or even haven't yet been sent we have to replay
+them on top of the changes received from overleaf in the meantime."
+  (with-current-buffer overleaf--buffer
+    (overleaf--flush-edit-queue overleaf--buffer)
+    (save-excursion
+      (let ((overleaf--is-overleaf-change t))
+        (if (and last-version (or overleaf--edit-in-flight overleaf--send-message-queue))
+            (progn
+              (overleaf--debug "%s replaying" (buffer-name))
+              (erase-buffer)
+              (insert (alist-get last-version overleaf--history))
+              (dolist (change overleaf--recent-updates)
+                (when (>= (car change) last-version)
+                  (overleaf--debug "~~~ ----------> %S" change)
+                  (overleaf--apply-changes-internal (overleaf--update-edits (cdr (cdr change))))))
+
+              (let ((change-version version))
+                (when overleaf--edit-in-flight
+                  (overleaf--debug "----------> %S" overleaf--edit-in-flight)
+                  (setf (overleaf--update-from-version overleaf--edit-in-flight) change-version)
+                  (overleaf--apply-changes-internal (overleaf--update-edits overleaf--edit-in-flight))
+                  (setq change-version (1+ change-version)))
+
+                (dolist (change overleaf--send-message-queue)
+                  (overleaf--debug "->>>>>>>>>>>>>>>>>>>>>>>>>>>> %S" change)
+                  (setf (overleaf--queued-message-doc-version change) (1- change-version))
+                  (setq change-version (1+ change-version))
+                  (overleaf--apply-changes-internal
+                   (overleaf--queued-message-edits change))
+                  (setf (overleaf--queued-message-hash change) (overleaf--get-hash)))))
+
+          (overleaf--apply-changes-internal edits))))))
+
+(cl-defstruct overleaf--queued-message
+  "A container that holds a queued message."
+  sequence-id
+  edits
+  doc-version
+  hash)
+
 (defun overleaf--flush-edit-queue (buffer)
   "Make an edit message and append it to the message queue of BUFFER."
   (when buffer
@@ -667,24 +846,20 @@ Version: 2024-04-03"
       (with-current-buffer buffer
         (overleaf--overleaf-queue-current-change)
         (when (and overleaf--websocket (websocket-openp overleaf--websocket) overleaf--edit-queue)
-          (setq-local buffer-read-only t)
-          (overleaf--debug "======> FLUSH %i" overleaf--doc-version)
-          (overleaf--queue-message
-           (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":%s%s,\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
-                   sequence-id
-                   overleaf-document-id
-                   overleaf-document-id
-                   (json-encode (apply #'vector overleaf--edit-queue))
-                   (if overleaf-track-changes
-                       (format ",\"meta\": {\"tc\":\"%s\"}"
-                               (overleaf--random-string 18))
-                     "")
-                   (1+ overleaf--doc-version) overleaf--doc-version (overleaf--get-hash))
-           (1+ overleaf--doc-version))
-          (setq-local sequence-id (1+ sequence-id))
-          (setq-local overleaf--doc-version (1+ overleaf--doc-version))
-          (setq overleaf--edit-queue '())
-          (setq-local buffer-read-only nil))))))
+          (let ((buf-string (buffer-substring-no-properties (point-min) (point-max))))
+            (setq-local buffer-read-only t)
+            (overleaf--debug "======> FLUSH %S %i" (buffer-name) overleaf--doc-version)
+            (overleaf--queue-message
+             (make-overleaf--queued-message
+              :sequence-id sequence-id
+              :edits (mapcar #'copy-sequence overleaf--edit-queue)
+              :doc-version overleaf--doc-version
+              :hash (overleaf--get-hash)))
+            (setq-local overleaf--buffer-before-edit-queue (concat buf-string))
+            (setq-local sequence-id (1+ sequence-id))
+            (overleaf--set-version (1+ overleaf--doc-version))
+            (setq overleaf--edit-queue '())
+            (setq-local buffer-read-only nil)))))))
 
 
 ;;; Change Detection

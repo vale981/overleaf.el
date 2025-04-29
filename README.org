@@ -6,8 +6,7 @@
 This packages provides ~overleaf-connection-mode~ that allows to
 live-edit $\LaTeX$ files on [[https://github.com/overleaf/overleaf][overleaf]].
 
-*This package is currently in alpha. Simultaneous edits from multiple
-users still have to be tested.*
+*This package is currently in alpha. Simultaneous edits from multiple sources are now supported but probably not fully bug free. However, the worst thing that can happen is that people on overleaf might get an "out of sync" message and have to reload the page.*
 [[file:assets/demo.gif]]
 
 To use this package, you can clone the repo, make it available in you
@@ -122,4 +121,4 @@ Feel free to open an issue providing this log.
 
 * To-do
 ** TODO indicate cursors of other users
-** TODO maybe make the cookies file buffer local...
+** TODO detect faulty document id
