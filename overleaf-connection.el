@@ -781,7 +781,10 @@ Version: 2024-04-03"
 
 
 (defun overleaf--apply-changes-internal (edits)
-  "Parse the edit list EDITS and apply them to the buffer."
+  "Parse the edit list EDITS and apply them to the buffer.
+
+Returns the edits as applied.  This is required because deletions might
+no longer be possible, or will occur at a different location."
   (let ((overleaf--is-overleaf-change t))
     (save-excursion
       (flatten-tree
