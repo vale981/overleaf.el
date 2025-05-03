@@ -284,13 +284,14 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
    (list
     (read-string "Overleaf URL: " (overleaf--url))))
 
+  (message-box "Log in to overleaf and wait until the browser window closes.")
+
   (overleaf--with-webdriver
    (unless (and (boundp 'overleaf-cookies)
                 (boundp 'overleaf-save-cookies) overleaf-cookies overleaf-save-cookies)
      (user-error "Both overleaf-cookies and overleaf-save-cookies need to be set"))
 
    (setq-local overleaf-url url)
-   (message-box "Log in to overleaf and wait until the browser window closes.")
    (let ((session (make-instance 'webdriver-session)))
      (unwind-protect
          (let ((full-cookies (overleaf--get-full-cookies)))
@@ -299,7 +300,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
            (overleaf--message "Log in now...")
 
            (overleaf--webdriver-wait-until-appears
-            (session "//button[@id='new-project-button-sidebar']" _))
+            (session "//button[@id='new-project-button-sidebar']"))
 
            (let* ((first-project
                    (webdriver-find-element
@@ -343,18 +344,17 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
 
 (defun overleaf--write-buffer-variables ()
   "Write the current buffer-local variables to the buffer."
-  ;; (when (overleaf--connected-p)
-  ;;   (save-excursion
-  ;;     (let ((overleaf--is-overleaf-change nil)
-  ;;           (track-changes overleaf-track-changes))
-  ;;       (setq-local overleaf-track-changes nil)
-  ;;       (add-file-local-variable 'overleaf-document-id overleaf-document-id)
-  ;;       (add-file-local-variable 'overleaf-project-id overleaf-project-id)
-  ;;       (add-file-local-variable 'overleaf-track-changes track-changes)
-  ;;       (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
-  ;;       (overleaf--flush-edit-queue (current-buffer))
-  ;;       (setq-local overleaf-track-changes track-changes))))
-  )
+  (when (overleaf--connected-p)
+    (save-excursion
+      (let ((overleaf--is-overleaf-change nil)
+            (track-changes overleaf-track-changes))
+        (setq-local overleaf-track-changes nil)
+        (add-file-local-variable 'overleaf-document-id overleaf-document-id)
+        (add-file-local-variable 'overleaf-project-id overleaf-project-id)
+        (add-file-local-variable 'overleaf-track-changes track-changes)
+        (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
+        (overleaf--flush-edit-queue (current-buffer))
+        (setq-local overleaf-track-changes track-changes)))))
 
 (defun overleaf--parse-message (ws message)
   "Parse a message MESSAGE from overleaf, responding by writing to WS."
@@ -565,7 +565,8 @@ This calls out to node.js for now."
   (setq-local overleaf-auto-save (not overleaf-auto-save))
   (overleaf--write-buffer-variables))
 
-(cl-defmacro overleaf--webdriver-wait-until-appears ((session xpath element-sym &optional (delay .1)) &rest body)
+(cl-defmacro overleaf--webdriver-wait-until-appears
+    ((session xpath &optional (element-sym '_unused) (delay .1)) &rest body)
   "Wait until an element matching XPATH is found in SESSION, bind it to ELEMENT-SYM and execute BODY."
   (let ((not-found (gensym))
         (sel-var (gensym)))
