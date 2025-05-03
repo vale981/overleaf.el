@@ -431,7 +431,6 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                       (overleaf--warn "Hash mismatch... reconnecting" (overleaf--get-hash) hash)
                       (setq-local buffer-read-only t)
                       (overleaf-connect)))
-                  (overleaf--set-version version)
                   (overleaf--push-to-history version)))))))))))
 
 (defun overleaf--save-buffer ()
