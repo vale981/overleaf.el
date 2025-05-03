@@ -343,17 +343,18 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
 
 (defun overleaf--write-buffer-variables ()
   "Write the current buffer-local variables to the buffer."
-  (when (overleaf--connected-p)
-    (save-excursion
-      (let ((overleaf--is-overleaf-change nil)
-            (track-changes overleaf-track-changes))
-        (setq-local overleaf-track-changes nil)
-        (add-file-local-variable 'overleaf-document-id overleaf-document-id)
-        (add-file-local-variable 'overleaf-project-id overleaf-project-id)
-        (add-file-local-variable 'overleaf-track-changes track-changes)
-        (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
-        (overleaf--flush-edit-queue (current-buffer))
-        (setq-local overleaf-track-changes track-changes)))))
+  ;; (when (overleaf--connected-p)
+  ;;   (save-excursion
+  ;;     (let ((overleaf--is-overleaf-change nil)
+  ;;           (track-changes overleaf-track-changes))
+  ;;       (setq-local overleaf-track-changes nil)
+  ;;       (add-file-local-variable 'overleaf-document-id overleaf-document-id)
+  ;;       (add-file-local-variable 'overleaf-project-id overleaf-project-id)
+  ;;       (add-file-local-variable 'overleaf-track-changes track-changes)
+  ;;       (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
+  ;;       (overleaf--flush-edit-queue (current-buffer))
+  ;;       (setq-local overleaf-track-changes track-changes))))
+  )
 
 (defun overleaf--parse-message (ws message)
   "Parse a message MESSAGE from overleaf, responding by writing to WS."
@@ -783,17 +784,20 @@ Version: 2024-04-03"
   "Parse the edit list EDITS and apply them to the buffer."
   (let ((overleaf--is-overleaf-change t))
     (save-excursion
-      (dolist (op edits)
-        (goto-char (1+ (plist-get op :p)))
-        (when-let* ((insert (plist-get op :i)))
-          (insert (overleaf--decode-utf8 insert))
-          (setq buffer-undo-list (memq nil buffer-undo-list)))
-        (when-let* ((delete (plist-get op :d)))
-          (re-search-forward (regexp-quote delete) nil t)
-          (replace-match "")
-          (setq buffer-undo-list (memq nil buffer-undo-list))))))
-  (when overleaf-auto-save
-    (overleaf--save-buffer)))
+      (flatten-tree
+       (mapcar
+        #'(lambda (op)
+            (goto-char (1+ (plist-get op :p)))
+            (when-let* ((insert (plist-get op :i)))
+              (insert (overleaf--decode-utf8 insert))
+              (setq buffer-undo-list (memq nil buffer-undo-list))
+              op)
+            (when-let* ((delete (plist-get op :d)))
+              (when (re-search-forward (regexp-quote delete) nil t)
+                (replace-match "")
+                (setq buffer-undo-list (memq nil buffer-undo-list))
+                `(:p ,(1- (point)) :d ,delete))))
+        edits)))))
 
 (defun overleaf--apply-changes (edits version last-version)
   "Apply overleaf change EDITS on buffer from version LAST-VERSION to VERSION.
@@ -815,20 +819,34 @@ them on top of the changes received from overleaf in the meantime."
                   (overleaf--debug "~~~ ----------> %S" change)
                   (overleaf--apply-changes-internal (overleaf--update-edits (cdr (cdr change))))))
 
-              (let ((change-version version))
+              (let ((change-version version)
+                    (buffer-before-application nil))
                 (when overleaf--edit-in-flight
                   (overleaf--debug "----------> %S" overleaf--edit-in-flight)
                   (setf (overleaf--update-from-version overleaf--edit-in-flight) change-version)
-                  (overleaf--apply-changes-internal (overleaf--update-edits overleaf--edit-in-flight))
-                  (setq change-version (1+ change-version)))
+                  (unless (overleaf--apply-changes-internal (overleaf--update-edits overleaf--edit-in-flight))
+                    (setq-local overleaf--edit-in-flight nil)))
 
-                (dolist (change overleaf--send-message-queue)
-                  (overleaf--debug "->>>>>>>>>>>>>>>>>>>>>>>>>>>> %S" change)
-                  (setf (overleaf--queued-message-doc-version change) (1- change-version))
-                  (setq change-version (1+ change-version))
-                  (overleaf--apply-changes-internal
-                   (overleaf--queued-message-edits change))
-                  (setf (overleaf--queued-message-hash change) (overleaf--get-hash)))))
+                (setq-local
+                 overleaf--send-message-queue
+                 (flatten-tree
+                  (mapcar
+                   #'(lambda (change)
+                       (overleaf--debug "->>>>>>>>>>>>>>>>>>>>>>>>>>>> %S" change)
+                       (setq buffer-before-application (buffer-string))
+                       (if-let* ((edits
+                                  (overleaf--apply-changes-internal
+                                   (overleaf--queued-message-edits change))))
+                           (progn
+                             (setf (overleaf--queued-message-doc-version change) change-version)
+                             (setq change-version (1+ change-version))
+                             (setf (overleaf--queued-message-hash change) (overleaf--get-hash))
+                             (setf (overleaf--queued-message-edits change) edits)
+                             change)
+                         (erase-buffer)
+                         (insert buffer-before-application)
+                         nil))
+                   overleaf--send-message-queue)))))
 
           (overleaf--apply-changes-internal edits))))))
 
