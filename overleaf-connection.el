@@ -187,6 +187,9 @@ It has elements of the form `((from-version . (to-version . update)) ...)'.")
 (defvar overleaf--current-cookies nil
   "The current cookies so we don't have to read them every time.")
 
+(defvar-local overleaf--receiving nil
+  "When t we are currently in the process of receiving and processing an update.")
+
 (defun overleaf--splice-into (list vers content &optional unique)
   "Splice a new element CONTENT into a an alist LIST sorted by VERS.
 If unique is t the element with key VERS will be overwritten."
@@ -403,6 +406,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                 (let ((res (concat id ":::" (json-encode `(:name "clientPong" :args ,(plist-get message :args))))))
                   (websocket-send-text ws res)))
                ("otUpdateApplied"
+                (setq overleaf--receiving t)
                 (let ((last-version (plist-get (car (plist-get message :args)) :lastV))
                       (version (plist-get (car (plist-get message :args)) :v))
                       (hash (plist-get (car (plist-get message :args)) :hash))
@@ -418,7 +422,9 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                         (setq overleaf--edit-in-flight nil)
                         (when (and (<= (length overleaf--send-message-queue) 1) overleaf-auto-save)
                           (overleaf--save-buffer))
-                        (overleaf--send-queued-message (current-buffer)))
+                        (when (> version overleaf--doc-version)
+                          (overleaf--set-version version)
+                          (overleaf--push-to-history version)))
 
                     (overleaf--push-to-recent-updates
                      (make-overleaf--update :from-version (or last-version (1- version)) :to-version version :edits edits :hash hash))
@@ -431,8 +437,9 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                                (not (string= (overleaf--get-hash) hash)))
                       (overleaf--warn "Hash mismatch... reconnecting" (overleaf--get-hash) hash)
                       (setq-local buffer-read-only t)
-                      (overleaf-connect)))
-                  (overleaf--push-to-history version)))))))))))
+                      (overleaf-connect))
+                    (overleaf--push-to-history version)))
+                (setq overleaf--receiving nil))))))))))
 
 (defun overleaf--save-buffer ()
   "Safely save the buffer."
@@ -514,7 +521,7 @@ This calls out to node.js for now."
        (progn
          (when overleaf--flush-edit-queue-timer
            (cancel-timer overleaf--flush-edit-queue-timer))
-         (run-with-idle-timer overleaf-flush-interval t #'overleaf--flush-edit-queue overleaf--buffer))))))
+         (run-with-idle-timer overleaf-flush-interval t #'overleaf--flush-edit-queue overleaf--buffer t))))))
 
 (defun overleaf--get-full-cookies ()
   "Load the association list domain<->cookies."
@@ -726,7 +733,7 @@ Version: 2024-04-03"
   "Send a message from the edit message queue of BUFFER if there is no other edit in flight."
   (let ((overleaf--buffer (or buffer overleaf--buffer)))
     (when overleaf--buffer
-      (unless overleaf--edit-in-flight
+      (unless (or overleaf--edit-in-flight overleaf--receiving)
         (with-current-buffer overleaf--buffer
           (when overleaf--send-message-queue
             (when-let* ((message (car overleaf--send-message-queue))
@@ -829,8 +836,9 @@ them on top of the changes received from overleaf in the meantime."
                   (overleaf--debug "----------> %S" overleaf--edit-in-flight)
                   (setf (overleaf--update-from-version overleaf--edit-in-flight) change-version)
                   (unless (overleaf--apply-changes-internal (overleaf--update-edits overleaf--edit-in-flight))
+                    (overleaf--debug "failed to apply")
                     (setq-local overleaf--edit-in-flight nil)))
-
+                (overleaf--debug "message queue is %S" overleaf--send-message-queue)
                 (setq-local
                  overleaf--send-message-queue
                  (flatten-tree
@@ -862,7 +870,7 @@ them on top of the changes received from overleaf in the meantime."
   hash
   track-changes)
 
-(defun overleaf--flush-edit-queue (buffer)
+(defun overleaf--flush-edit-queue (buffer &optional no-race)
   "Make an edit message and append it to the message queue of BUFFER."
   (when buffer
     (let ((overleaf--buffer buffer))
