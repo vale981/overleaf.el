@@ -349,6 +349,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
       (let ((overleaf--is-overleaf-change nil)
             (track-changes overleaf-track-changes))
         (setq-local overleaf-track-changes nil)
+        (message overleaf-track-changes)
         (add-file-local-variable 'overleaf-document-id overleaf-document-id)
         (add-file-local-variable 'overleaf-project-id overleaf-project-id)
         (add-file-local-variable 'overleaf-track-changes track-changes)
@@ -738,7 +739,7 @@ Version: 2024-04-03"
                        overleaf-document-id
                        overleaf-document-id
                        (json-encode (apply #'vector (overleaf--queued-message-edits message)))
-                       (if overleaf-track-changes
+                       (if (overleaf--queued-message-track-changes message)
                            (format ",\"meta\": {\"tc\":\"%s\"}"
                                    (overleaf--random-string 18))
                          "")
@@ -858,7 +859,8 @@ them on top of the changes received from overleaf in the meantime."
   sequence-id
   edits
   doc-version
-  hash)
+  hash
+  track-changes)
 
 (defun overleaf--flush-edit-queue (buffer)
   "Make an edit message and append it to the message queue of BUFFER."
@@ -875,7 +877,8 @@ them on top of the changes received from overleaf in the meantime."
               :sequence-id sequence-id
               :edits (mapcar #'copy-sequence overleaf--edit-queue)
               :doc-version overleaf--doc-version
-              :hash (overleaf--get-hash)))
+              :hash (overleaf--get-hash)
+              :track-changes overleaf-track-changes))
             (setq-local overleaf--buffer-before-edit-queue (concat buf-string))
             (setq-local sequence-id (1+ sequence-id))
             (overleaf--set-version (1+ overleaf--doc-version))
