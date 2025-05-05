@@ -795,20 +795,21 @@ Returns the edits as applied.  This is required because deletions might
 no longer be possible, or will occur at a different location."
   (let ((overleaf--is-overleaf-change t))
     (save-excursion
-      (flatten-tree
-       (mapcar
-        #'(lambda (op)
-            (goto-char (1+ (plist-get op :p)))
-            (when-let* ((insert (plist-get op :i)))
-              (insert (overleaf--decode-utf8 insert))
-              (setq buffer-undo-list (memq nil buffer-undo-list))
-              op)
-            (when-let* ((delete (plist-get op :d)))
-              (when (re-search-forward (regexp-quote delete) nil t)
-                (replace-match "")
-                (setq buffer-undo-list (memq nil buffer-undo-list))
-                `(:p ,(1- (point)) :d ,delete))))
-        edits)))))
+      (remq nil
+            (mapcar
+             #'(lambda (op)
+                 (goto-char (1+ (plist-get op :p)))
+                 (if-let* ((insert (plist-get op :i)))
+                     (progn
+                       (insert (overleaf--decode-utf8 insert))
+                       (setq buffer-undo-list (memq nil buffer-undo-list))
+                       op)
+                   (if-let* ((delete (plist-get op :d)))
+                       (when (re-search-forward (regexp-quote delete) nil t)
+                         (replace-match "")
+                         (setq buffer-undo-list (memq nil buffer-undo-list))
+                         `(:p ,(1- (point)) :d ,delete)))))
+             edits)))))
 
 (defun overleaf--apply-changes (edits version last-version)
   "Apply overleaf change EDITS on buffer from version LAST-VERSION to VERSION.
@@ -841,24 +842,24 @@ them on top of the changes received from overleaf in the meantime."
                 (overleaf--debug "message queue is %S" overleaf--send-message-queue)
                 (setq-local
                  overleaf--send-message-queue
-                 (flatten-tree
-                  (mapcar
-                   #'(lambda (change)
-                       (overleaf--debug "->>>>>>>>>>>>>>>>>>>>>>>>>>>> %S" change)
-                       (setq buffer-before-application (buffer-string))
-                       (if-let* ((edits
-                                  (overleaf--apply-changes-internal
-                                   (overleaf--queued-message-edits change))))
-                           (progn
-                             (setf (overleaf--queued-message-doc-version change) change-version)
-                             (setq change-version (1+ change-version))
-                             (setf (overleaf--queued-message-hash change) (overleaf--get-hash))
-                             (setf (overleaf--queued-message-edits change) edits)
-                             change)
-                         (erase-buffer)
-                         (insert buffer-before-application)
-                         nil))
-                   overleaf--send-message-queue)))))
+                 (remq nil
+                       (mapcar
+                        #'(lambda (change)
+                            (overleaf--debug "->>>>>>>>>>>>>>>>>>>>>>>>>>>> %S" change)
+                            (setq buffer-before-application (buffer-string))
+                            (if-let* ((edits
+                                       (overleaf--apply-changes-internal
+                                        (overleaf--queued-message-edits change))))
+                                (progn
+                                  (setf (overleaf--queued-message-doc-version change) change-version)
+                                  (setq change-version (1+ change-version))
+                                  (setf (overleaf--queued-message-hash change) (overleaf--get-hash))
+                                  (setf (overleaf--queued-message-edits change) edits)
+                                  change)
+                              (erase-buffer)
+                              (insert buffer-before-application)
+                              nil))
+                        overleaf--send-message-queue)))))
 
           (overleaf--apply-changes-internal edits))))))
 
