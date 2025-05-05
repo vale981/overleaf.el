@@ -439,13 +439,10 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
     (save-buffer)
     (setq-local buffer-read-only nil)))
 
-(defun overleaf--decode-utf8 (str)
-  "Decode the weird overleaf utf8 decoding in STR.
-
-This calls out to node.js for now."
-  (with-temp-buffer
-    (call-process "node" nil t nil (concat (file-name-directory (symbol-file 'overleaf--decode-utf8)) "decode.js") str)
-    (buffer-string)))
+(defun overleaf--decode-utf8 (string)
+  "Decode the weird overleaf utf8 decoding in STRING."
+  (decode-coding-string
+   (mapconcat #'byte-to-string string) 'utf-8))
 
 (defun overleaf-disconnect ()
   "Disconnect from overleaf."
@@ -793,7 +790,7 @@ no longer be possible, or will occur at a different location."
                  (goto-char (1+ (plist-get op :p)))
                  (if-let* ((insert (plist-get op :i)))
                      (progn
-                       (insert (overleaf--decode-utf8 insert))
+                       (insert insert)
                        (setq buffer-undo-list (memq nil buffer-undo-list))
                        op)
                    (if-let* ((delete (plist-get op :d)))
