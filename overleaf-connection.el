@@ -237,7 +237,9 @@ the local overleaf version history."
       (setq-local overleaf--history
                   (overleaf--splice-into overleaf--history version
                                          (or buffer-string (buffer-string)) t))
-      (setq-local overleaf--history (overleaf--truncate overleaf--history overleaf-history-buffer-length)))))
+      (setq-local overleaf--history (overleaf--truncate overleaf--history overleaf-history-buffer-length))
+      (when overleaf-auto-save
+        (save-buffer)))))
 
 
 (defun overleaf--push-to-recent-updates (update)
