@@ -51,14 +51,14 @@ Can a string or function that returns a string containing the overleaf
 authentication cookies.
 
 For example the variable can be bound to a function that loads the
-cookies from a gpg encrypted file. See `overleaf-read-cookies-from-file`.
+cookies from a gpg encrypted file. See `overleaf-read-cookies-from-file'.
 
 The cookies are most easily obtained from the developer tools in the
 browser.")
 
 (defun overleaf-read-cookies-from-file (file)
   "Return a cookie saving function to load the cookie-string from FILE.
-To be used with `overleaf-cookies`."
+To be used with `overleaf-cookies'."
   #'(lambda ()
       (with-temp-buffer
         (insert-file-contents (expand-file-name file))
@@ -68,14 +68,14 @@ To be used with `overleaf-cookies`."
                                   (setq overleaf-cookies cookies))
   "A function (lambda) that stores the session cookies.
 The function receives a string containing the session cookies and stores
-in a way that `overleaf-cookies` can access it.  The default
-implementation simply sets `overleaf-cookies` to the string value.
+in a way that `overleaf-cookies' can access it.  The default
+implementation simply sets `overleaf-cookies' to the string value.
 Another possibility is to store them into a gpg encrypted file.  See
-`overleaf-save-cookies-to-file`.")
+`overleaf-save-cookies-to-file'.")
 
 (defun overleaf-save-cookies-to-file (file)
   "Return a cookie saving function to save the cookie-string to FILE.
-To be used with `overleaf-save-cookies`."
+To be used with `overleaf-save-cookies'."
   #'(lambda (cookies)
       (with-temp-file file
         (insert cookies))))
@@ -121,11 +121,11 @@ edited from the overleaf interface.   The download URL will then be of the form
 
 
 (defvar-local overleaf--is-overleaf-change nil
-  "Is set to `t` if the current change in the buffer comes from overleaf.
+  "Is set to t if the current change in the buffer comes from overleaf.
 Used to inhibit the change detection.")
 
 (defvar-local overleaf--force-close nil
-  "If `t` the connection will not be reestablished upon disconnection.")
+  "If t the connection will not be reestablished upon disconnection.")
 
 (defvar-local overleaf--websocket nil
   "The websocket instance connected to overleaf.")
@@ -243,7 +243,7 @@ the local overleaf version history."
 
 
 (defun overleaf--push-to-recent-updates (update)
-  "Splice the UPDATE of type `overleaf--update' into `overleaf--recent-updates'."
+  "Splice the UPDATE of type `overleaf--update' into 'overleaf--recent-updates'."
   (let ((from-version (overleaf--update-from-version update))
         (to-version (overleaf--update-to-version update)))
     (when (and from-version to-version overleaf--buffer)
@@ -278,7 +278,7 @@ the local overleaf version history."
   (string-trim (string-trim overleaf-url) "" "/"))
 
 (defun overleaf--cookie-domain ()
-  "Return the domain for which the cookies will be valid from the current value of `overleaf-url`."
+  "Return the domain for which the cookies will be valid from the current value of `overleaf-url'."
   (let ((domain-parts (string-split (overleaf--url) "\\.")))
     (string-join (last domain-parts 2) ".")))
 
@@ -299,7 +299,7 @@ After running this command, wait for the browser-window to pop up and
 for the login page to load.  Note that if the cookies are still valid,
 the login page may not be shown and this command terminates without user input.
 
-Requires `geckodriver` (see
+Requires `geckodriver' (see
 https://github.com/mozilla/geckodriver/releases) to be installed."
   (interactive
    (list
@@ -589,7 +589,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
 To use this, open a file for editing in overleaf in your browser.  Then,
 copy the url of the project and use it with this command.
 
-Requires `geckodriver` (see
+Requires `geckodriver' (see
 https://github.com/mozilla/geckodriver/releases) to be installed."
   (interactive
    (list
@@ -636,7 +636,7 @@ This message will self-destruct in 10 seconds!
 (defun overleaf-connect ()
   "Connect to overleaf.
 Requires `overleaf-cookies' to be set.  Prompts for the
-`overleaf-project-id' and `overleaf-document-id` and saves them in the
+`overleaf-project-id' and `overleaf-document-id' and saves them in the
 file."
   (interactive)
 
@@ -687,7 +687,7 @@ file."
              overleaf--buffer
              overleaf--ws-url->buffer-table)
             (overleaf--update-modeline))))
-    (error "Please set `overleaf-cookies`")))
+    (error "Please set `overleaf-cookies'")))
 
 (defun overleaf--random-string (&optional CountX)
   "Return a random string of length COUNTX.
@@ -1071,10 +1071,10 @@ Mainly used to detect switchover between deletion and insertion."
   (force-mode-line-update t))
 
 (defun overleaf--init ()
-  "Set up the `overleaf-connection-mode`.
+  "Set up the `overleaf-connection-mode'.
 
 - Add the mode line status to the current mode line string.
-- Turn off `inhibit-notification-hooks` as this prevents detecting changes
+- Turn off `inhibit-notification-hooks' as this prevents detecting changes
   to sync to overleaf."
 
   (unless global-mode-string (setq global-mode-string '("")))
