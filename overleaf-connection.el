@@ -798,7 +798,7 @@ no longer be possible, or will occur at a different location."
                          `(:p ,(1- (point)) :d ,delete)))))
              edits)))))
 
-(defun overleaf--apply-changes (edits version last-version hash)
+(cl-defun overleaf--apply-changes (edits version last-version hash)
   "Apply overleaf change EDITS on buffer from version LAST-VERSION to VERSION to have the hash HASH.
 
 If there are some updates to the buffer that haven't yet been
@@ -829,25 +829,30 @@ them on top of the changes received from overleaf in the meantime."
           (if (or overleaf--edit-in-flight overleaf--send-message-queue)
               (progn
                 (when last-version
-                  (overleaf--debug "%s replaying" (buffer-name))
-                  (erase-buffer)
-                  (insert (alist-get last-version overleaf--history))
-                  (dolist (change overleaf--recent-updates)
-                    (when (>= (car change) last-version)
-                      (overleaf--debug "~~~ ----------> %S" change)
-                      (overleaf--apply-changes-internal (overleaf--update-edits (cdr (cdr change))))))
-                  (overleaf--push-to-history version)
+                  (if (alist-get last-version overleaf--history)
+                      (progn
+                        (overleaf--debug "%s replaying" (buffer-name))
+                        (erase-buffer)
+                        (insert (alist-get last-version overleaf--history))
+                        (dolist (change overleaf--recent-updates)
+                          (when (>= (car change) last-version)
+                            (overleaf--debug "~~~ ----------> %S" change)
+                            (overleaf--apply-changes-internal (overleaf--update-edits (cdr (cdr change))))))
+                        (overleaf--push-to-history version)
 
 
-                  (when overleaf--edit-in-flight
-                    (overleaf--debug "----------> %S" overleaf--edit-in-flight)
-                    (setf (overleaf--update-from-version overleaf--edit-in-flight) overleaf--doc-version)
-                    (if (overleaf--apply-changes-internal (overleaf--update-edits overleaf--edit-in-flight))
-                        (progn
-                          (setf (overleaf--update-buffer overleaf--edit-in-flight) (buffer-string))
-                          (overleaf--set-version (1+ overleaf--doc-version)))
-                      (overleaf--debug "failed to apply")
-                      (setq-local overleaf--edit-in-flight nil))))
+                        (when overleaf--edit-in-flight
+                          (overleaf--debug "----------> %S" overleaf--edit-in-flight)
+                          (setf (overleaf--update-from-version overleaf--edit-in-flight) overleaf--doc-version)
+                          (if (overleaf--apply-changes-internal (overleaf--update-edits overleaf--edit-in-flight))
+                              (progn
+                                (setf (overleaf--update-buffer overleaf--edit-in-flight) (buffer-string))
+                                (overleaf--set-version (1+ overleaf--doc-version)))
+                            (overleaf--debug "failed to apply")
+                            (setq-local overleaf--edit-in-flight nil))))
+
+                    (overleaf--warn "We haven't seen document version %i yet. Reconnecting" last-version)
+                    (overleaf-connect)))
 
                 (when (and overleaf--send-message-queue (or last-version (> version overleaf--doc-version)))
                   (let ((buffer-before-application nil))
