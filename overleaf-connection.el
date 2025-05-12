@@ -348,7 +348,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
 (defun overleaf--webdriver-set-cookies (session)
   "Set the cookies in the webdriver session SESSION."
   (let ((cookie-domain (overleaf--cookie-domain))
-        (cookies (overleaf--get-cokies)))
+        (cookies (overleaf--get-cookies)))
     (when cookies
       (dolist (cookie (string-split cookies ";"))
         (pcase-let ((`(,name ,value) (string-split cookie "=")))
@@ -528,25 +528,20 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
        (overleaf--warn "Error while loading cookies: %s" (error-message-string err))
        nil))))
 
-(defun overleaf--get-unix-time ()
-  "Get the current unix time in seconds."
-  (let ((current-time-list nil))
-    (pcase-let ((`(,ticks . ,hz) (current-time)))
-      (/ ticks hz))))
-
-(defun overleaf--get-cokies ()
-  "Load the cookies either directly as a string from `overleaf-cookies` or by calling the function bound to the symbol."
+(defun overleaf--get-cookies ()
+  "Load the cookies from `overleaf-cookies'."
   (if-let
       ((cookies
         (alist-get (overleaf--cookie-domain)
                    (overleaf--get-full-cookies)
-                   nil nil #'string=)))
+                   nil nil #'string=))
+       (now (time-convert nil 'integer))) ; Current unix time in seconds.
       (pcase-let ((`(,value ,validity) cookies))
-        (if (or (not validity) (< (overleaf--get-unix-time) validity))
+        (if (or (not validity) (< now validity))
             value
           (user-error "Cookies for %s are expired.  Please refresh them using `overleaf-authenticate' or manually"
                       (overleaf--cookie-domain))))
-    (user-error "Cookies for %s are not set.  Please refresh them using `overleaf-get-cookies` or manually"
+    (user-error "Cookies for %s are not set.  Please set them using `overleaf-get-cookies' or manually"
                 (overleaf--cookie-domain))))
 
 (defun overleaf-toggle-track-changes ()
@@ -648,7 +643,7 @@ file."
           (setq-local overleaf-document-id
                       (or overleaf-document-id
                           (read-from-minibuffer "Overleaf document id: ")))
-          (let* ((cookies (overleaf--get-cokies))
+          (let* ((cookies (overleaf--get-cookies))
                  (ws-id
                   (car (string-split
                         (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" (overleaf--url) overleaf-project-id)
