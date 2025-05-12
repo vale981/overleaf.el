@@ -110,6 +110,7 @@ The available keybindings
   - =[prefix] d= - disconnect
   - =[prefix] t= - toggle track-changes
   - =[prefix] s= - toggle auto-save
+  - =[prefix] b= - browse project
 
 * Troubleshooting
 Rather verbose logging may be enabled by setting ~overleaf-debug~ to ~t~.

@@ -557,6 +557,14 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
   (setq-local overleaf-auto-save (not overleaf-auto-save))
   (overleaf--write-buffer-variables))
 
+(defun overleaf-browse-project ()
+  "Browse the current project with `browse-url'.
+`overleaf-url' and `overleaf-project-id' define the current project."
+  (interactive)
+  (unless overleaf-project-id
+    (user-error "overleaf-project-id is not set"))
+  (browse-url (format "%s/project/%s" (overleaf--url) overleaf-project-id)))
+
 (cl-defmacro overleaf--webdriver-wait-until-appears
     ((session xpath &optional (element-sym '_unused) (delay .1)) &rest body)
   "Wait until an element matching XPATH is found in SESSION, bind it to ELEMENT-SYM and execute BODY."
@@ -1096,7 +1104,8 @@ Interactively with no argument, this command toggles the mode."
    (overleaf--key "c" overleaf-connect)
    (overleaf--key "d" overleaf-disconnect)
    (overleaf--key "t" overleaf-toggle-track-changes)
-   (overleaf--key "s" overleaf-toggle-auto-save))
+   (overleaf--key "s" overleaf-toggle-auto-save)
+   (overleaf--key "b" overleaf-browse-project))
 
   (if overleaf-connection-mode
       (overleaf--init)
