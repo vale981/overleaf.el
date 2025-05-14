@@ -9,7 +9,7 @@
 ;; Package-Requires: ((emacs "30.1") (plz "0.9") (websocket "1.15") (webdriver "0.1"))
 ;; Version: 1.0.0
 ;; Keywords: latex, overleaf
-
+;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; This file is not part of GNU Emacs.
 
 ;;; License:

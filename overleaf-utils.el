@@ -1,4 +1,5 @@
 ;;; overleaf-utils.el --- Some utility functions for overleaf-connection.el -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
 ;; Utility functions that would clutter the main source of overleaf-connection.el

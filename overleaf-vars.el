@@ -1,4 +1,5 @@
 ;;; overleaf-vars.el --- Shared variable and customize definitions  -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
 ;; Variable definitions that are shared across the project.
