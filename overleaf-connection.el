@@ -32,331 +32,47 @@
 ;; Provides a minor mode that allows to sync the changes of a buffer
 ;; to an overleaf instance (https://github.com/overleaf/overleaf).
 
+(require 'overleaf-vars)
+(require 'overleaf-utils)
 (require 'webdriver)
 (require 'webdriver-firefox)
 (require 'websocket)
 (require 'plz)
 
 ;;; Code:
-(eval-and-compile
-  (defcustom overleaf-keymap-prefix "C-c C-o"
-    "The prefix for dotcrafter-mode key bindings."
-    :type 'string
-    :group 'overleaf-connection-mode))
 
-(defvar overleaf-cookies nil
-  "The overleaf session cookies.
-
-Can a string or function that returns a string containing the overleaf
-authentication cookies.
-
-For example the variable can be bound to a function that loads the
-cookies from a gpg encrypted file. See `overleaf-read-cookies-from-file'.
-
-The cookies are most easily obtained from the developer tools in the
-browser.")
-
-(defun overleaf-read-cookies-from-file (file)
-  "Return a cookie saving function to load the cookie-string from FILE.
-To be used with `overleaf-cookies'."
-  #'(lambda ()
-      (with-temp-buffer
-        (insert-file-contents (expand-file-name file))
-        (string-trim (buffer-string)))))
-
-(defvar overleaf-save-cookies #'(lambda (cookies)
-                                  (setq overleaf-cookies cookies))
-  "A function (lambda) that stores the session cookies.
-The function receives a string containing the session cookies and stores
-in a way that `overleaf-cookies' can access it.  The default
-implementation simply sets `overleaf-cookies' to the string value.
-Another possibility is to store them into a gpg encrypted file.  See
-`overleaf-save-cookies-to-file'.")
-
-(defun overleaf-save-cookies-to-file (file)
-  "Return a cookie saving function to save the cookie-string to FILE.
-To be used with `overleaf-save-cookies'."
-  #'(lambda (cookies)
-      (with-temp-file file
-        (insert cookies))))
-
-(defcustom overleaf-url "https://www.overleaf.com"
-  "The url of the overleaf server."
-  :type 'string
-  :group 'overleaf-connection-mode)
-
-(defcustom overleaf-flush-interval .5
-  "The idle-timer delay to flush the edit queue."
-  :type 'float
-  :group 'overleaf-connection-mode)
-
-(defcustom overleaf-message-interval .5
-  "The interval for the timer that syncs changes to overleaf."
-  :type 'float
-  :group 'overleaf-connection-mode)
-
-(defcustom overleaf-debug nil
-  "Whether to log debug messages."
-  :type 'boolean
-  :group 'overleaf-connection-mode)
-
-(defvar-local overleaf-auto-save nil
-  "Whether to auto-save the buffer each time a change is synced.")
-
-(defvar-local overleaf-project-id nil
-  "The overleaf project id.
-
-When having a project opened in the browser the URL should read
-\"https://[overleaf-domain]/project/[project-id]\".")
-
-(defvar-local overleaf-document-id nil
-  "The overleaf document id as a string.
-
-The id is most easily obtained by downloading the file that is to be
-edited from the overleaf interface.   The download URL will then be of the form
-\"https://[overleaf-domain]/project/[project-id]/doc/[document-id]\".")
-
-(defvar-local overleaf-track-changes nil
-  "Whether or not to track changes in overleaf.")
-
-
-(defvar-local overleaf--is-overleaf-change nil
-  "Is set to t if the current change in the buffer comes from overleaf.
-Used to inhibit the change detection.")
-
-(defvar-local overleaf--force-close nil
-  "If t the connection will not be reestablished upon disconnection.")
-
-(defvar-local overleaf--websocket nil
-  "The websocket instance connected to overleaf.")
-
-(defvar-local overleaf--flush-edit-queue-timer nil
-  "A timer that flushes the edit queue.
-
-See `overleaf--edit-queue'.")
-
-(defvar-local overleaf--message-timer nil
-  "A timer that sends edits from the message queue if it isn't empty.
-
-See `overleaf--message-queue'.")
-
-(defvar-local overleaf--edit-queue '()
-  "A list of edits that can be send in one go.")
-
-(defvar-local overleaf--send-message-queue '()
-  "A list of messages containing edits that have yet to be synced to overleaf.
-
-See `overleaf--message-timer'.")
-
-(defvar-local overleaf--edit-in-flight nil
-  "If non-nil, we still await the acknowledgment from overleaf.")
-
-(defvar-local overleaf--doc-version -1
-  "Current version of the document.")
-
-(defvar-local overleaf--mode-line ""
-  "Contents of the mode-line indicator.")
-
-(defvar overleaf--ws-url->buffer-table (make-hash-table :test #'equal)
-  "A hash table associating web-sockets to buffers.")
-
-(defvar overleaf--buffer nil
-  "The current overleaf buffer (used in lexical binding).")
-
-(defvar-local overleaf--buffer-before-edit-queue ""
-  "The contents of the buffer before any edits were queued.")
-
-(defvar-local overleaf--last-good-state nil
-  "The last received overleaf update.")
-
-(defvar-local overleaf--history nil
-  "An list that relates version numbers to the buffer text at that version.
-Should only contain known-good states.  Is limited to length `overleaf-history-buffer-length'.")
-
-(defvar-local overleaf-history-buffer-length 50
-  "How many past versions of the buffer to keep in memory.")
-
-(defvar-local overleaf--recent-updates nil
-  "An alist that contains the `overleaf-update-buffer-length' recent updates.
-
-It has elements of the form `((from-version . (to-version . update)) ...)'.")
-
-(defvar-local overleaf-update-buffer-length 50
-  "How many past updates of the buffer to keep in memory.")
-
-(defvar overleaf--current-cookies nil
-  "The current cookies so we don't have to read them every time.")
-
-(defvar-local overleaf--receiving nil
-  "When t we are currently in the process of receiving and processing an update.")
-
-(cl-defstruct overleaf--queued-message
-  "A container that holds a queued message."
-  sequence-id
-  edits
-  doc-version
-  hash
-  track-changes
-  buffer-before
-  buffer)
-
-(cl-defstruct overleaf--update
-  "An update received from or sent to overleaf.
-
-EDITS are a list of edit operations (inserts and deletes).
-FROM-VERSION is the buffer version being edited.
-TO-VERSION is the buffer version we hope to reach.
-HASH is a hash obtained from `overleaf--get-hash' after the edit is performed.
-BUFFER is the buffer value after applying the update."
-  edits
-  from-version
-  to-version
-  hash
-  buffer)
-
-(defun overleaf--splice-into (list vers content &optional unique)
-  "Splice a new element CONTENT into a an alist LIST sorted by VERS.
-If unique is t the element with key VERS will be overwritten."
-  (let ((head-vers (car (car list))))
-    (if (or (not head-vers) (< vers head-vers))
-        `((,vers . ,content) ,@list)
-      (if (and unique (= vers head-vers))
-          `((,vers . ,content) ,@(cdr list))
-        `(,(car list) ,@(overleaf--splice-into (cdr list) vers content))))))
-
-
-(defun overleaf--truncate (list max-length)
-  "Remove the first elements from LIST to make it MAX-LENGTH long."
-  (nthcdr (max 0 (- (length list) max-length)) list))
-
-(defun overleaf--push-to-history (version &optional buffer-string)
-  "Push the contents of `overleaf--buffer' or BUFFER-STRING of VERSION to
-the local overleaf version history."
-  (when (and version overleaf--buffer)
-    (with-current-buffer overleaf--buffer
-      (setq-local overleaf--history
-                  (overleaf--splice-into overleaf--history version
-                                         (or buffer-string (buffer-string)) t))
-      (setq-local overleaf--history (overleaf--truncate overleaf--history overleaf-history-buffer-length))
-      (when overleaf-auto-save
-        (save-buffer)))))
-
-
-(defun overleaf--push-to-recent-updates (update)
-  "Splice the UPDATE of type `overleaf--update' into 'overleaf--recent-updates'."
-  (let ((from-version (overleaf--update-from-version update))
-        (to-version (overleaf--update-to-version update)))
-    (when (and from-version to-version overleaf--buffer)
-      (with-current-buffer overleaf--buffer
-        (setq-local overleaf--recent-updates (overleaf--splice-into overleaf--recent-updates from-version (cons to-version update)))
-        (setq-local overleaf--recent-updates (overleaf--truncate overleaf--recent-updates overleaf-update-buffer-length))))))
-
-
-(defmacro overleaf--warn (&rest args)
-  "Print a warning message passing ARGS on to `display-warning'."
-  `(display-warning 'overleaf (format ,@args)))
-
-(defmacro overleaf--message (string &rest args)
-  "Print a message with format string STRING and arguments ARGS."
-  `(message  (format ,(concat "Overleaf: " string) ,@args)))
-
-(defun overleaf--debug (format-string &rest args)
-  "Print a debug message with format string FORMAT-STRING and arguments ARGS."
-  (when overleaf-debug
-    (if overleaf--buffer
-        (with-current-buffer overleaf--buffer
-          (with-current-buffer (get-buffer-create (format "*overleaf-%s*" overleaf-document-id))
-            (setq buffer-read-only nil)
-            (goto-char (point-max))
-            (insert (apply #'format format-string args))
-            (insert "\n")
-            (setq buffer-read-only t)))
-      (apply #'warn format-string args))))
-
-(defun overleaf--url ()
-  "Return a sanitized version of the url without trailing slash."
-  (string-trim (string-trim overleaf-url) "" "/"))
-
-(defun overleaf--cookie-domain ()
-  "Return the domain for which the cookies will be valid from the current value of `overleaf-url'."
-  (let ((domain-parts (string-split (overleaf--url) "\\.")))
-    (string-join (last domain-parts 2) ".")))
-
-(defmacro overleaf--with-webdriver (&rest body)
-  "Execute BODY if geckodriver is found and show an error message otherwise."
-  `(if (not (executable-find "geckodriver"))
-       (message-box "Please install geckodriver or set the cookies / document and project id manually.")
-     ,@body))
-
-(defun overleaf--set-version (vers)
-  "Set the buffer version to VERS."
-  (overleaf--debug "Setting buffer version to %s" vers)
-  (setq-local overleaf--doc-version vers))
-
-;;;###autoload
-(defun overleaf-authenticate (url)
-  "Use selenium webdriver to log into overleaf URL and obtain the cookies.
-After running this command, wait for the browser-window to pop up and
-for the login page to load.  Note that if the cookies are still valid,
-the login page may not be shown and this command terminates without user input.
-
-Requires `geckodriver' (see
-https://github.com/mozilla/geckodriver/releases) to be installed."
-  (interactive
-   (list
-    (read-string "Overleaf URL: " (overleaf--url))))
-
-  (message-box "Log in to overleaf and wait until the browser window closes.")
-
-  (overleaf--with-webdriver
-   (unless (and (boundp 'overleaf-cookies)
-                (boundp 'overleaf-save-cookies) overleaf-cookies overleaf-save-cookies)
-     (user-error "Both overleaf-cookies and overleaf-save-cookies need to be set"))
-
-   (setq-local overleaf-url url)
-   (let ((session (make-instance 'webdriver-session)))
-     (unwind-protect
-         (let ((full-cookies (overleaf--get-full-cookies)))
-           (webdriver-session-start session)
-           (webdriver-goto-url session (concat (overleaf--url) "/login"))
-           (overleaf--message "Log in now...")
-
-           (overleaf--webdriver-wait-until-appears
-            (session "//button[@id='new-project-button-sidebar']"))
-
-           (let* ((first-project
-                   (webdriver-find-element
-                    session
-                    (make-instance 'webdriver-by
-                                   :strategy "xpath"
-                                   :selector "//tr/td/a")))
-                  (first-project-path (webdriver-get-element-attribute session first-project "href")))
-             (webdriver-goto-url session (concat (overleaf--url) first-project-path))
-             (let ((cookies
-                    (webdriver-get-all-cookies session)))
-               (setf (alist-get (overleaf--cookie-domain) full-cookies nil nil #'string=)
-                     (list
-                      (substring (apply #'concat
-                                        (mapcar #'(lambda (cookie)
-                                                    (format "%s=%s; " (alist-get 'name cookie) (alist-get 'value cookie)))
-                                                cookies))
-                                 0 -2)
-                      (alist-get 'expiry (aref cookies 0))))
-               (funcall overleaf-save-cookies
-                        (prin1-to-string full-cookies)))))
-       (webdriver-session-stop session)))))
-
-(defun overleaf--webdriver-set-cookies (session)
-  "Set the cookies in the webdriver session SESSION."
-  (let ((cookie-domain (overleaf--cookie-domain))
-        (cookies (overleaf--get-cookies)))
-    (when cookies
-      (dolist (cookie (string-split cookies ";"))
-        (pcase-let ((`(,name ,value) (string-split cookie "=")))
-          (webdriver-add-cookie
-           session
-           `(:name ,(string-trim name) :value ,(string-trim value) :domain
-                   ,cookie-domain)))))))
+;;;; Communication
+
+(defun overleaf--get-full-cookies ()
+  "Load the association list domain<->cookies."
+  (if overleaf--current-cookies
+      overleaf--current-cookies
+    (condition-case err
+        (setq overleaf--current-cookies
+              (read
+               (if (or (functionp overleaf-cookies)
+                       (fboundp 'overleaf-cookies))
+                   (funcall overleaf-cookies)
+                 overleaf-cookies)))
+      (error
+       (overleaf--warn "Error while loading cookies: %s" (error-message-string err))
+       nil))))
+
+(defun overleaf--get-cookies ()
+  "Load the cookies from `overleaf-cookies'."
+  (if-let
+      ((cookies
+        (alist-get (overleaf--cookie-domain)
+                   (overleaf--get-full-cookies)
+                   nil nil #'string=))
+       (now (time-convert nil 'integer))) ; Current unix time in seconds.
+      (pcase-let ((`(,value ,validity) cookies))
+        (if (or (not validity) (< now validity))
+            value
+          (user-error "Cookies for %s are expired.  Please refresh them using `overleaf-authenticate' or manually"
+                      (overleaf--cookie-domain))))
+    (user-error "Cookies for %s are not set.  Please set them using `overleaf-get-cookies' or manually"
+                (overleaf--cookie-domain))))
 
 (defun overleaf--connected-p ()
   "Return t if the buffer is connected to overleaf."
@@ -364,19 +80,58 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
        (websocket-openp overleaf--websocket)
        (>= overleaf--doc-version 0)))
 
-(defun overleaf--write-buffer-variables ()
-  "Write the current buffer-local variables to the buffer."
-  (when (overleaf--connected-p)
-    (save-excursion
-      (let ((overleaf--is-overleaf-change nil)
-            (track-changes overleaf-track-changes))
-        (setq-local overleaf-track-changes nil)
-        (add-file-local-variable 'overleaf-document-id overleaf-document-id)
-        (add-file-local-variable 'overleaf-project-id overleaf-project-id)
-        (add-file-local-variable 'overleaf-track-changes track-changes)
-        (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
-        (overleaf--flush-edit-queue (current-buffer))
-        (setq-local overleaf-track-changes track-changes)))))
+(defun overleaf--on-open (_websocket)
+  "Handle the open even of the web-socket _WEBSOCKET."
+  (let ((overleaf--buffer
+         (gethash (websocket-url _websocket) overleaf--ws-url->buffer-table)))
+
+    (with-current-buffer overleaf--buffer
+      (overleaf--update-modeline)
+
+      (add-hook 'after-change-functions #'overleaf--after-change-function nil :local)
+      (add-hook 'before-change-functions #'overleaf--before-change-function nil :local)
+      (add-hook 'kill-buffer-hook #'overleaf-disconnect nil :local)
+
+      (setq-local
+       overleaf--message-timer
+       (progn
+         (when overleaf--message-timer
+           (cancel-timer overleaf--message-timer))
+         (run-at-time t overleaf-message-interval #'overleaf--send-queued-message overleaf--buffer)))
+
+      (setq-local
+       overleaf--flush-edit-queue-timer
+       (progn
+         (when overleaf--flush-edit-queue-timer
+           (cancel-timer overleaf--flush-edit-queue-timer))
+         (run-with-idle-timer overleaf-flush-interval t #'overleaf--flush-edit-queue overleaf--buffer))))))
+
+(defun overeleaf--on-message (ws frame)
+  "Handle a message received from websocket WS with contents FRAME."
+  (let ((overleaf--buffer
+         (gethash (websocket-url ws) overleaf--ws-url->buffer-table)))
+    (overleaf--debug "Got message %S" frame)
+    (overleaf--parse-message ws (websocket-frame-text frame))))
+
+(defun overleaf--on-close (ws)
+  "Handle the closure of the websocket WS."
+  (let ((overleaf--buffer
+         (gethash (websocket-url ws) overleaf--ws-url->buffer-table)))
+    (with-current-buffer overleaf--buffer
+      (when overleaf--websocket
+        (overleaf--message "Websocket for document %s closed." overleaf-document-id)
+        (setq-local buffer-read-only nil)
+        (cancel-timer overleaf--message-timer)
+        (cancel-timer overleaf--flush-edit-queue-timer)
+        (remhash (websocket-url ws) overleaf--ws-url->buffer-table)
+        (setq-local overleaf--websocket nil)
+        (overleaf--update-modeline)
+        (unless overleaf--force-close
+          (with-current-buffer overleaf--buffer
+            (setq buffer-read-only t)
+            (sleep-for .1)
+            (setq overleaf--websocket nil)
+            (overleaf-connect)))))))
 
 (defun overleaf--parse-message (ws message)
   "Parse a message MESSAGE from overleaf, responding by writing to WS."
@@ -435,274 +190,6 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                 (setq overleaf--receiving nil)))
              (overleaf--send-queued-message))))))))
 
-(defun overleaf--save-buffer ()
-  "Safely save the buffer."
-  (let ((overleaf--is-overleaf-change t))
-    (setq-local buffer-read-only t)
-    (save-buffer)
-    (setq-local buffer-read-only nil)))
-
-(defun overleaf--decode-utf8 (string)
-  "Decode the weird overleaf utf8 decoding in STRING."
-  (decode-coding-string
-   (mapconcat #'byte-to-string string) 'utf-8))
-
-(defun overleaf-disconnect ()
-  "Disconnect from overleaf."
-  (interactive)
-  (when overleaf--websocket
-    (overleaf--message "Disconnecting")
-    (setq-local overleaf--force-close t)
-    (setq-local overleaf--edit-queue '())
-    (setq-local overleaf--send-message-queue '())
-    (websocket-close overleaf--websocket)
-    (when overleaf-auto-save
-      (overleaf--save-buffer))
-    (setq-local overleaf--force-close nil)
-    (remhash overleaf--websocket overleaf--ws-url->buffer-table)))
-
-(defun overleaf--on-close (ws)
-  "Handle the closure of the websocket WS."
-  (let ((overleaf--buffer
-         (gethash (websocket-url ws) overleaf--ws-url->buffer-table)))
-    (with-current-buffer overleaf--buffer
-      (when overleaf--websocket
-        (overleaf--message "Websocket for document %s closed." overleaf-document-id)
-        (setq-local buffer-read-only nil)
-        (cancel-timer overleaf--message-timer)
-        (cancel-timer overleaf--flush-edit-queue-timer)
-        (remhash (websocket-url ws) overleaf--ws-url->buffer-table)
-        (setq-local overleaf--websocket nil)
-        (overleaf--update-modeline)
-        (unless overleaf--force-close
-          (with-current-buffer overleaf--buffer
-            (setq buffer-read-only t)
-            (sleep-for .1)
-            (setq overleaf--websocket nil)
-            (overleaf-connect)))))))
-
-(defun overeleaf--on-message (ws frame)
-  "Handle a message received from websocket WS with contents FRAME."
-  (let ((overleaf--buffer
-         (gethash (websocket-url ws) overleaf--ws-url->buffer-table)))
-    (overleaf--debug "Got message %S" frame)
-    (overleaf--parse-message ws (websocket-frame-text frame))))
-
-(defun overleaf--on-open (_websocket)
-  "Handle the open even of the web-socket _WEBSOCKET."
-  (let ((overleaf--buffer
-         (gethash (websocket-url _websocket) overleaf--ws-url->buffer-table)))
-
-    (with-current-buffer overleaf--buffer
-      (overleaf--update-modeline)
-
-      (add-hook 'after-change-functions #'overleaf--after-change-function nil :local)
-      (add-hook 'before-change-functions #'overleaf--before-change-function nil :local)
-      (add-hook 'kill-buffer-hook #'overleaf-disconnect nil :local)
-
-      (setq-local
-       overleaf--message-timer
-       (progn
-         (when overleaf--message-timer
-           (cancel-timer overleaf--message-timer))
-         (run-at-time t overleaf-message-interval #'overleaf--send-queued-message overleaf--buffer)))
-
-      (setq-local
-       overleaf--flush-edit-queue-timer
-       (progn
-         (when overleaf--flush-edit-queue-timer
-           (cancel-timer overleaf--flush-edit-queue-timer))
-         (run-with-idle-timer overleaf-flush-interval t #'overleaf--flush-edit-queue overleaf--buffer t))))))
-
-(defun overleaf--get-full-cookies ()
-  "Load the association list domain<->cookies."
-  (if overleaf--current-cookies
-      overleaf--current-cookies
-    (condition-case err
-        (setq overleaf--current-cookies
-              (read
-               (if (or (functionp overleaf-cookies)
-                       (fboundp 'overleaf-cookies))
-                   (funcall overleaf-cookies)
-                 overleaf-cookies)))
-      (error
-       (overleaf--warn "Error while loading cookies: %s" (error-message-string err))
-       nil))))
-
-(defun overleaf--get-cookies ()
-  "Load the cookies from `overleaf-cookies'."
-  (if-let
-      ((cookies
-        (alist-get (overleaf--cookie-domain)
-                   (overleaf--get-full-cookies)
-                   nil nil #'string=))
-       (now (time-convert nil 'integer))) ; Current unix time in seconds.
-      (pcase-let ((`(,value ,validity) cookies))
-        (if (or (not validity) (< now validity))
-            value
-          (user-error "Cookies for %s are expired.  Please refresh them using `overleaf-authenticate' or manually"
-                      (overleaf--cookie-domain))))
-    (user-error "Cookies for %s are not set.  Please set them using `overleaf-get-cookies' or manually"
-                (overleaf--cookie-domain))))
-
-(defun overleaf-toggle-track-changes ()
-  "Toggle track-changes feature change on overleaf."
-  (interactive)
-  (setq-local overleaf-track-changes (not overleaf-track-changes))
-  (overleaf--write-buffer-variables)
-  (overleaf--update-modeline))
-
-(defun overleaf-toggle-auto-save ()
-  "Toggle track-changes feature change on overleaf."
-  (interactive)
-  (setq-local overleaf-auto-save (not overleaf-auto-save))
-  (overleaf--write-buffer-variables))
-
-(defun overleaf-browse-project ()
-  "Browse the current project with `browse-url'.
-`overleaf-url' and `overleaf-project-id' define the current project."
-  (interactive)
-  (unless overleaf-project-id
-    (user-error "overleaf-project-id is not set"))
-  (browse-url (format "%s/project/%s" (overleaf--url) overleaf-project-id)))
-
-(cl-defmacro overleaf--webdriver-wait-until-appears
-    ((session xpath &optional (element-sym '_unused) (delay .1)) &rest body)
-  "Wait until an element matching XPATH is found in SESSION, bind it to ELEMENT-SYM and execute BODY."
-  (let ((not-found (gensym))
-        (sel-var (gensym)))
-    `(let ((,sel-var
-            (make-instance 'webdriver-by
-                           :strategy "xpath"
-                           :selector ,xpath))
-           (,not-found t))
-       (while ,not-found
-         (condition-case nil
-             (let ((,element-sym
-                    (webdriver-find-element ,session ,sel-var)))
-               (setq ,not-found nil)
-               ,@body)
-           (webdriver-error
-            (sleep-for ,delay)))))))
-
-;;;###autoload
-(defun overleaf-find-file (url)
-  "Use selenium webdriver to connect to the project under URL.
-To use this, open a file for editing in overleaf in your browser.  Then,
-copy the url of the project and use it with this command.
-
-Requires `geckodriver' (see
-https://github.com/mozilla/geckodriver/releases) to be installed."
-  (interactive
-   (list
-    (read-string "Overleaf URL: " (overleaf--url))))
-
-  (setq-local overleaf-url url)
-
-  (overleaf--with-webdriver
-   (message-box "  1. Wait for the project list to load.
-  2. Select a project.
-  3. Wait for the project list to load and open a project.
-  4. Select the file you would like to edit in the file browser on the left.
-
-This message will self-destruct in 10 seconds!
-(Just kidding...)")
-   (let ((session (make-instance 'webdriver-session)))
-     (unwind-protect
-         (progn
-           (webdriver-session-start session)
-           (webdriver-goto-url session (concat (overleaf--url) "/favicon.svg"))
-           (overleaf--webdriver-set-cookies session)
-           (webdriver-goto-url session (overleaf--url))
-
-           (overleaf--webdriver-wait-until-appears
-            (session "//div[@class='file-tree-inner']" file-list)
-            (webdriver-execute-synchronous-script session "document.evaluate(\"//div[@class='file-tree-inner']\", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click()" []))
-
-           (overleaf--webdriver-wait-until-appears
-            (session "//li[@class='selected']/div" selected)
-            (setq-local overleaf-document-id
-                        (webdriver-get-element-attribute session selected "data-file-id")))
-
-           (let ((url (webdriver-get-current-url session)))
-             (save-match-data
-               (let ((match (string-match "^\\(.*\\)/project/\\([0-9a-z]+\\)$" url)))
-                 (unless match
-                   (user-error "Invalid project url"))
-                 (setq-local
-                  overleaf-url (match-string 1 url)
-                  overleaf-project-id (match-string 2 url))
-                 (overleaf-connect)))))
-       (webdriver-session-stop session)))))
-
-;;;###autoload
-(defun overleaf-connect ()
-  "Connect to overleaf.
-Requires `overleaf-cookies' to be set.  Prompts for the
-`overleaf-project-id' and `overleaf-document-id' and saves them in the
-file."
-  (interactive)
-
-  (overleaf-connection-mode t)
-  (overleaf-disconnect)
-  (if overleaf-cookies
-      (let ((overleaf--buffer (current-buffer)))
-        (with-current-buffer overleaf--buffer
-          (setq-local overleaf-project-id
-                      (or overleaf-project-id
-                          (read-from-minibuffer "Overleaf project id: ")))
-          (setq-local overleaf-document-id
-                      (or overleaf-document-id
-                          (read-from-minibuffer "Overleaf document id: ")))
-          (let* ((cookies (overleaf--get-cookies))
-                 (ws-id
-                  (car (string-split
-                        (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" (overleaf--url) overleaf-project-id)
-                          :headers `(("Cookie" . ,cookies)
-                                     ("Origin" . ,(overleaf--url)))) ":"))))
-
-            (overleaf--debug "Connecting %s %s" overleaf-project-id overleaf-document-id)
-
-            (setq-local overleaf--last-good-state nil)
-            (setq-local overleaf--history '())
-            (setq-local overleaf--recent-updates '())
-            (setq-local overleaf--last-change-type nil)
-            (setq-local overleaf--deletion-buffer "")
-            (setq-local overleaf--edit-queue '())
-            (setq-local overleaf--send-message-queue '())
-            (setq-local overleaf--edit-in-flight nil)
-            (setq-local buffer-read-only t)
-            (setq-local overleaf--doc-version -1)
-            (setq-local sequence-id 2)
-            (puthash
-             (websocket-url
-              (setq-local overleaf--websocket
-                          (websocket-open
-                           (replace-regexp-in-string
-                            "https" "wss"
-                            (format "%s/socket.io/1/websocket/%s?projectId=%s&esh=1&ssp=1"
-                                    (overleaf--url) ws-id overleaf-project-id))
-                           :on-message #'overeleaf--on-message
-                           :on-close #'overleaf--on-close
-                           :on-open #'overleaf--on-open
-                           :custom-header-alist `(("Cookie" . ,cookies)
-                                                  ("Origin" . ,(overleaf--url))))))
-             overleaf--buffer
-             overleaf--ws-url->buffer-table)
-            (overleaf--update-modeline))))
-    (error "Please set `overleaf-cookies'")))
-
-(defun overleaf--random-string (&optional CountX)
-  "Return a random string of length COUNTX.
-
-Pilfered from
-URL `http://xahlee.info/emacs/emacs/elisp_insert_random_number_string.html'
-Version: 2024-04-03"
-  (let ((xcharset "abcdfghjkmnpqrstvwxyz23456789") xcount xvec)
-    (setq xcount (length xcharset))
-    (setq xvec (mapcar (lambda (_) (aref xcharset (random xcount))) (make-vector (if CountX CountX 5) 0)))
-    (mapconcat 'char-to-string xvec)))
-
 (defun overleaf--get-hash ()
   "Get the hash of the overleaf buffer."
   (with-current-buffer overleaf--buffer
@@ -711,15 +198,26 @@ Version: 2024-04-03"
       (let ((buff (buffer-string)))
         (secure-hash 'sha1 (format "blob %i\x00%s" (length buff) buff))))))
 
+(defun overleaf--push-to-history (version &optional buffer-string)
+  "Push the contents of `overleaf--buffer' or BUFFER-STRING of VERSION to
+the local overleaf version history."
+  (when (and version overleaf--buffer)
+    (with-current-buffer overleaf--buffer
+      (setq-local overleaf--history
+                  (overleaf--splice-into overleaf--history version
+                                         (or buffer-string (buffer-string)) t))
+      (setq-local overleaf--history (overleaf--truncate overleaf--history overleaf-history-buffer-length))
+      (when overleaf-auto-save
+        (save-buffer)))))
 
-(defun overleaf--escape-string (str)
-  "Escape STR to send to overleaf."
-  (json-encode str))
-
-(defun overleaf--queue-edit (edit)
-  "Add EDIT to the edit queue."
-  (overleaf--debug "====> adding %s to queue" edit)
-  (setq overleaf--edit-queue (nconc overleaf--edit-queue (list edit))))
+(defun overleaf--push-to-recent-updates (update)
+  "Splice the UPDATE of type `overleaf--update' into 'overleaf--recent-updates'."
+  (let ((from-version (overleaf--update-from-version update))
+        (to-version (overleaf--update-to-version update)))
+    (when (and from-version to-version overleaf--buffer)
+      (with-current-buffer overleaf--buffer
+        (setq-local overleaf--recent-updates (overleaf--splice-into overleaf--recent-updates from-version (cons to-version update)))
+        (setq-local overleaf--recent-updates (overleaf--truncate overleaf--recent-updates overleaf-update-buffer-length))))))
 
 (defun overleaf--queue-message (message)
   "Queue edit MESSAGE leading to buffer version VERSION to be send to overleaf."
@@ -764,26 +262,6 @@ Version: 2024-04-03"
                            :buffer (overleaf--queued-message-buffer message)))
               (overleaf--debug "send %S %i %i" (buffer-name) current-version next-version)
               (setq overleaf--send-message-queue (cdr overleaf--send-message-queue)))))))))
-
-(defun overleaf--overleaf-queue-current-change (&optional buffer)
-  "Queue the change to BUFFER currently being built."
-  (let ((overleaf--buffer (or buffer overleaf--buffer)))
-    (when overleaf--buffer
-      (with-current-buffer overleaf--buffer
-        (when (and overleaf--last-change-type (websocket-openp overleaf--websocket))
-          (overleaf--debug "======> %s %i %i %s" overleaf--last-change-type overleaf--last-change-begin (point) overleaf--deletion-buffer)
-          (pcase overleaf--last-change-type
-            (:d
-             (overleaf--queue-edit
-              `(:p ,(- overleaf--last-change-begin 1) :d ,overleaf--deletion-buffer)))
-            (:i
-             (overleaf--queue-edit
-              `(:p ,(- overleaf--last-change-begin 1) :i ,(buffer-substring-no-properties overleaf--last-change-begin overleaf--last-change-end)))))
-          (setq-local overleaf--last-change-type nil)
-          (setq-local overleaf--last-change-begin -1)
-          (setq-local overleaf--last-change-end -1)
-          (setq-local overleaf--deletion-buffer ""))))))
-
 
 (defun overleaf--apply-changes-internal (edits)
   "Parse the edit list EDITS and apply them to the buffer.
@@ -913,33 +391,37 @@ them on top of the changes received from overleaf in the meantime."
       (goto-char point))))
 
 
-(defun overleaf--flush-edit-queue (buffer &optional no-race)
-  "Make an edit message and append it to the message queue of BUFFER."
-  (when buffer
-    (let ((overleaf--buffer buffer))
-      (with-current-buffer buffer
-        (overleaf--overleaf-queue-current-change)
-        (when (and overleaf--websocket (websocket-openp overleaf--websocket) overleaf--edit-queue)
-          (let ((buf-string (buffer-substring-no-properties (point-min) (point-max))))
-            (setq-local buffer-read-only t)
-            (overleaf--debug "======> FLUSH %S %i" (buffer-name) overleaf--doc-version)
-            (overleaf--queue-message
-             (make-overleaf--queued-message
-              :sequence-id sequence-id
-              :edits (mapcar #'copy-sequence overleaf--edit-queue)
-              :doc-version overleaf--doc-version
-              :hash (overleaf--get-hash)
-              :track-changes overleaf-track-changes
-              :buffer-before overleaf--buffer-before-edit-queue
-              :buffer buf-string))
-            (setq-local overleaf--buffer-before-edit-queue (concat buf-string))
-            (setq-local sequence-id (1+ sequence-id))
-            (overleaf--set-version (1+ overleaf--doc-version))
-            (setq overleaf--edit-queue '())
-            (setq-local buffer-read-only nil)))))))
+;;;; Misc
+
+(defun overleaf--set-version (vers)
+  "Set the buffer version to VERS."
+  (overleaf--debug "Setting buffer version to %s" vers)
+  (setq-local overleaf--doc-version vers))
+
+(defun overleaf--write-buffer-variables ()
+  "Write the current buffer-local variables to the buffer."
+  (when (overleaf--connected-p)
+    (save-excursion
+      (let ((overleaf--is-overleaf-change nil)
+            (track-changes overleaf-track-changes))
+        (setq-local overleaf-track-changes nil)
+        (add-file-local-variable 'overleaf-document-id overleaf-document-id)
+        (add-file-local-variable 'overleaf-project-id overleaf-project-id)
+        (add-file-local-variable 'overleaf-track-changes track-changes)
+        (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
+        (overleaf--flush-edit-queue (current-buffer))
+        (setq-local overleaf-track-changes track-changes)))))
+
+(defun overleaf--save-buffer ()
+  "Safely save the buffer."
+  (let ((overleaf--is-overleaf-change t))
+    (setq-local buffer-read-only t)
+    (save-buffer)
+    (setq-local buffer-read-only nil)))
 
 
-;;; Change Detection
+;;;; Change Detection
+
 (defvar-local overleaf--before-change "")
 (defvar-local overleaf--before-change-begin -1)
 (defvar-local overleaf--before-change-end -1)
@@ -1028,7 +510,6 @@ them on top of the changes received from overleaf in the meantime."
               (overleaf--overleaf-queue-current-change)
               (overleaf--flush-edit-queue overleaf--buffer)))))))))
 
-
 (defun overleaf--before-change-function (begin end)
   "Change hook called to signal an impending change between BEGIN and END.
 
@@ -1053,6 +534,258 @@ Mainly used to detect switchover between deletion and insertion."
         (overleaf--debug "Edit type switchover --> flushing edit queue %s" overleaf--edit-queue)
         (overleaf--overleaf-queue-current-change)
         (overleaf--flush-edit-queue (current-buffer))))))
+
+(defun overleaf--flush-edit-queue (buffer)
+  "Make an edit message and append it to the message queue of BUFFER."
+  (when buffer
+    (let ((overleaf--buffer buffer))
+      (with-current-buffer buffer
+        (overleaf--overleaf-queue-current-change)
+        (when (and overleaf--websocket (websocket-openp overleaf--websocket) overleaf--edit-queue)
+          (let ((buf-string (buffer-substring-no-properties (point-min) (point-max))))
+            (setq-local buffer-read-only t)
+            (overleaf--debug "======> FLUSH %S %i" (buffer-name) overleaf--doc-version)
+            (overleaf--queue-message
+             (make-overleaf--queued-message
+              :sequence-id sequence-id
+              :edits (mapcar #'copy-sequence overleaf--edit-queue)
+              :doc-version overleaf--doc-version
+              :hash (overleaf--get-hash)
+              :track-changes overleaf-track-changes
+              :buffer-before overleaf--buffer-before-edit-queue
+              :buffer buf-string))
+            (setq-local overleaf--buffer-before-edit-queue (concat buf-string))
+            (setq-local sequence-id (1+ sequence-id))
+            (overleaf--set-version (1+ overleaf--doc-version))
+            (setq overleaf--edit-queue '())
+            (setq-local buffer-read-only nil)))))))
+
+(defun overleaf--queue-edit (edit)
+  "Add EDIT to the edit queue."
+  (overleaf--debug "====> adding %s to queue" edit)
+  (setq overleaf--edit-queue (nconc overleaf--edit-queue (list edit))))
+
+
+(defun overleaf--overleaf-queue-current-change (&optional buffer)
+  "Queue the change to BUFFER currently being built."
+  (let ((overleaf--buffer (or buffer overleaf--buffer)))
+    (when overleaf--buffer
+      (with-current-buffer overleaf--buffer
+        (when (and overleaf--last-change-type (websocket-openp overleaf--websocket))
+          (overleaf--debug "======> %s %i %i %s" overleaf--last-change-type overleaf--last-change-begin (point) overleaf--deletion-buffer)
+          (pcase overleaf--last-change-type
+            (:d
+             (overleaf--queue-edit
+              `(:p ,(- overleaf--last-change-begin 1) :d ,overleaf--deletion-buffer)))
+            (:i
+             (overleaf--queue-edit
+              `(:p ,(- overleaf--last-change-begin 1) :i ,(buffer-substring-no-properties overleaf--last-change-begin overleaf--last-change-end)))))
+          (setq-local overleaf--last-change-type nil)
+          (setq-local overleaf--last-change-begin -1)
+          (setq-local overleaf--last-change-end -1)
+          (setq-local overleaf--deletion-buffer ""))))))
+
+;;;; Interface
+
+;;;###autoload
+(defun overleaf-toggle-track-changes ()
+  "Toggle track-changes feature change on overleaf."
+  (interactive)
+  (setq-local overleaf-track-changes (not overleaf-track-changes))
+  (overleaf--write-buffer-variables)
+  (overleaf--update-modeline))
+
+;;;###autoload
+(defun overleaf-toggle-auto-save ()
+  "Toggle track-changes feature change on overleaf."
+  (interactive)
+  (setq-local overleaf-auto-save (not overleaf-auto-save))
+  (overleaf--write-buffer-variables))
+
+;;;###autoload
+(defun overleaf-browse-project ()
+  "Browse the current project with `browse-url'.
+`overleaf-url' and `overleaf-project-id' define the current project."
+  (interactive)
+  (unless overleaf-project-id
+    (user-error "overleaf-project-id is not set"))
+  (browse-url (format "%s/project/%s" (overleaf--url) overleaf-project-id)))
+
+;;;###autoload
+(defun overleaf-authenticate (url)
+  "Use selenium webdriver to log into overleaf URL and obtain the cookies.
+After running this command, wait for the browser-window to pop up and
+for the login page to load.  Note that if the cookies are still valid,
+the login page may not be shown and this command terminates without user input.
+
+Requires `geckodriver' (see
+https://github.com/mozilla/geckodriver/releases) to be installed."
+  (interactive
+   (list
+    (read-string "Overleaf URL: " (overleaf--url))))
+
+  (message-box "Log in to overleaf and wait until the browser window closes.")
+
+  (overleaf--with-webdriver
+   (unless (and (boundp 'overleaf-cookies)
+                (boundp 'overleaf-save-cookies) overleaf-cookies overleaf-save-cookies)
+     (user-error "Both overleaf-cookies and overleaf-save-cookies need to be set"))
+
+   (setq-local overleaf-url url)
+   (let ((session (make-instance 'webdriver-session)))
+     (unwind-protect
+         (let ((full-cookies (overleaf--get-full-cookies)))
+           (webdriver-session-start session)
+           (webdriver-goto-url session (concat (overleaf--url) "/login"))
+           (overleaf--message "Log in now...")
+
+           (overleaf--webdriver-wait-until-appears
+            (session "//button[@id='new-project-button-sidebar']"))
+
+           (let* ((first-project
+                   (webdriver-find-element
+                    session
+                    (make-instance 'webdriver-by
+                                   :strategy "xpath"
+                                   :selector "//tr/td/a")))
+                  (first-project-path (webdriver-get-element-attribute session first-project "href")))
+             (webdriver-goto-url session (concat (overleaf--url) first-project-path))
+             (let ((cookies
+                    (webdriver-get-all-cookies session)))
+               (setf (alist-get (overleaf--cookie-domain) full-cookies nil nil #'string=)
+                     (list
+                      (substring (apply #'concat
+                                        (mapcar #'(lambda (cookie)
+                                                    (format "%s=%s; " (alist-get 'name cookie) (alist-get 'value cookie)))
+                                                cookies))
+                                 0 -2)
+                      (alist-get 'expiry (aref cookies 0))))
+               (funcall overleaf-save-cookies
+                        (prin1-to-string full-cookies)))))
+       (webdriver-session-stop session)))))
+
+
+;;;###autoload
+(defun overleaf-find-file (url)
+  "Use selenium webdriver to connect to the project under URL.
+To use this, open a file for editing in overleaf in your browser.  Then,
+copy the url of the project and use it with this command.
+
+Requires `geckodriver' (see
+https://github.com/mozilla/geckodriver/releases) to be installed."
+  (interactive
+   (list
+    (read-string "Overleaf URL: " (overleaf--url))))
+
+  (setq-local overleaf-url url)
+
+  (overleaf--with-webdriver
+   (message-box "  1. Wait for the project list to load.
+  2. Select a project.
+  3. Wait for the project list to load and open a project.
+  4. Select the file you would like to edit in the file browser on the left.
+
+This message will self-destruct in 10 seconds!
+(Just kidding...)")
+   (let ((session (make-instance 'webdriver-session)))
+     (unwind-protect
+         (progn
+           (webdriver-session-start session)
+           (webdriver-goto-url session (concat (overleaf--url) "/favicon.svg"))
+           (overleaf--webdriver-set-cookies session)
+           (webdriver-goto-url session (overleaf--url))
+
+           (overleaf--webdriver-wait-until-appears
+            (session "//div[@class='file-tree-inner']" file-list)
+            (webdriver-execute-synchronous-script session "document.evaluate(\"//div[@class='file-tree-inner']\", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click()" []))
+
+           (overleaf--webdriver-wait-until-appears
+            (session "//li[@class='selected']/div" selected)
+            (setq-local overleaf-document-id
+                        (webdriver-get-element-attribute session selected "data-file-id")))
+
+           (let ((url (webdriver-get-current-url session)))
+             (save-match-data
+               (let ((match (string-match "^\\(.*\\)/project/\\([0-9a-z]+\\)$" url)))
+                 (unless match
+                   (user-error "Invalid project url"))
+                 (setq-local
+                  overleaf-url (match-string 1 url)
+                  overleaf-project-id (match-string 2 url))
+                 (overleaf-connect)))))
+       (webdriver-session-stop session)))))
+
+;;;###autoload
+(defun overleaf-connect ()
+  "Connect to overleaf.
+Requires `overleaf-cookies' to be set.  Prompts for the
+`overleaf-project-id' and `overleaf-document-id' and saves them in the
+file."
+  (interactive)
+
+  (overleaf-connection-mode t)
+  (overleaf-disconnect)
+  (if overleaf-cookies
+      (let ((overleaf--buffer (current-buffer)))
+        (with-current-buffer overleaf--buffer
+          (setq-local overleaf-project-id
+                      (or overleaf-project-id
+                          (read-from-minibuffer "Overleaf project id: ")))
+          (setq-local overleaf-document-id
+                      (or overleaf-document-id
+                          (read-from-minibuffer "Overleaf document id: ")))
+          (let* ((cookies (overleaf--get-cookies))
+                 (ws-id
+                  (car (string-split
+                        (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" (overleaf--url) overleaf-project-id)
+                          :headers `(("Cookie" . ,cookies)
+                                     ("Origin" . ,(overleaf--url)))) ":"))))
+
+            (overleaf--debug "Connecting %s %s" overleaf-project-id overleaf-document-id)
+
+            (setq-local overleaf--last-good-state nil)
+            (setq-local overleaf--history '())
+            (setq-local overleaf--recent-updates '())
+            (setq-local overleaf--last-change-type nil)
+            (setq-local overleaf--deletion-buffer "")
+            (setq-local overleaf--edit-queue '())
+            (setq-local overleaf--send-message-queue '())
+            (setq-local overleaf--edit-in-flight nil)
+            (setq-local buffer-read-only t)
+            (setq-local overleaf--doc-version -1)
+            (setq-local sequence-id 2)
+            (puthash
+             (websocket-url
+              (setq-local overleaf--websocket
+                          (websocket-open
+                           (replace-regexp-in-string
+                            "https" "wss"
+                            (format "%s/socket.io/1/websocket/%s?projectId=%s&esh=1&ssp=1"
+                                    (overleaf--url) ws-id overleaf-project-id))
+                           :on-message #'overeleaf--on-message
+                           :on-close #'overleaf--on-close
+                           :on-open #'overleaf--on-open
+                           :custom-header-alist `(("Cookie" . ,cookies)
+                                                  ("Origin" . ,(overleaf--url))))))
+             overleaf--buffer
+             overleaf--ws-url->buffer-table)
+            (overleaf--update-modeline))))
+    (error "Please set `overleaf-cookies'")))
+
+;;;###autoload
+(defun overleaf-disconnect ()
+  "Disconnect from overleaf."
+  (interactive)
+  (when overleaf--websocket
+    (overleaf--message "Disconnecting")
+    (setq-local overleaf--force-close t)
+    (setq-local overleaf--edit-queue '())
+    (setq-local overleaf--send-message-queue '())
+    (websocket-close overleaf--websocket)
+    (when overleaf-auto-save
+      (overleaf--save-buffer))
+    (setq-local overleaf--force-close nil)
+    (remhash overleaf--websocket overleaf--ws-url->buffer-table)))
 
 (defun overleaf--update-modeline ()
   "Update the modeline string to reflect the current connection status."
