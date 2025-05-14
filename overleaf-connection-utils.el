@@ -1,13 +1,13 @@
-;;; overleaf-utils.el --- Some utility functions for overleaf-connection.el -*- lexical-binding: t; -*-
+;;; overleaf-connection-utils.el --- Some utility functions for overleaf-connection.el -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
 ;; Utility functions that would clutter the main source of overleaf-connection.el
 
 ;;; Code:
-(require 'overleaf-vars)
+(require 'overleaf-connection-vars)
 
-(defun overleaf--splice-into (list vers content &optional unique)
+(defun overleaf-connection--splice-into (list vers content &optional unique)
   "Splice a new element CONTENT into a an alist LIST sorted by VERS.
 If unique is t the element with key VERS will be overwritten."
   (let ((head-vers (car (car list))))
@@ -15,27 +15,27 @@ If unique is t the element with key VERS will be overwritten."
         `((,vers . ,content) ,@list)
       (if (and unique (= vers head-vers))
           `((,vers . ,content) ,@(cdr list))
-        `(,(car list) ,@(overleaf--splice-into (cdr list) vers content))))))
+        `(,(car list) ,@(overleaf-connection--splice-into (cdr list) vers content))))))
 
-(defun overleaf--truncate (list max-length)
+(defun overleaf-connection--truncate (list max-length)
   "Remove the first elements from LIST to make it MAX-LENGTH long."
   (nthcdr (max 0 (- (length list) max-length)) list))
 
-(defun overleaf--url ()
+(defun overleaf-connection--url ()
   "Return a sanitized version of the url without trailing slash."
-  (string-trim (string-trim overleaf-url) "" "/"))
+  (string-trim (string-trim overleaf-connection-url) "" "/"))
 
-(defun overleaf--cookie-domain ()
-  "Return the domain for which the cookies will be valid from the current value of `overleaf-url'."
-  (let ((domain-parts (string-split (overleaf--url) "\\.")))
+(defun overleaf-connection--cookie-domain ()
+  "Return the domain for which the cookies will be valid from the current value of `overleaf-connection-url'."
+  (let ((domain-parts (string-split (overleaf-connection--url) "\\.")))
     (string-join (last domain-parts 2) ".")))
 
-(defun overleaf--decode-utf8 (string)
+(defun overleaf-connection--decode-utf8 (string)
   "Decode the weird overleaf utf8 decoding in STRING."
   (decode-coding-string
    (mapconcat #'byte-to-string string) 'utf-8))
 
-(defun overleaf--random-string (&optional CountX)
+(defun overleaf-connection--random-string (&optional CountX)
   "Return a random string of length COUNTX.
 
 Pilfered from
@@ -48,12 +48,12 @@ Version: 2024-04-03"
 
 
 ;;;; Logging
-(defun overleaf--debug (format-string &rest args)
+(defun overleaf-connection--debug (format-string &rest args)
   "Print a debug message with format string FORMAT-STRING and arguments ARGS."
-  (when overleaf-debug
-    (if overleaf--buffer
-        (with-current-buffer overleaf--buffer
-          (with-current-buffer (get-buffer-create (format "*overleaf-%s*" overleaf-document-id))
+  (when overleaf-connection-debug
+    (if overleaf-connection--buffer
+        (with-current-buffer overleaf-connection--buffer
+          (with-current-buffer (get-buffer-create (format "*overleaf-connection-%s*" overleaf-connection-document-idea))
             (setq buffer-read-only nil)
             (goto-char (point-max))
             (insert (apply #'format format-string args))
@@ -61,26 +61,26 @@ Version: 2024-04-03"
             (setq buffer-read-only t)))
       (apply #'warn format-string args))))
 
-(defmacro overleaf--warn (&rest args)
+(defmacro overleaf-connection--warn (&rest args)
   "Print a warning message passing ARGS on to `display-warning'."
   `(display-warning 'overleaf (format ,@args)))
 
-(defmacro overleaf--message (string &rest args)
+(defmacro overleaf-connection--message (string &rest args)
   "Print a message with format string STRING and arguments ARGS."
   `(message  (format ,(concat "Overleaf: " string) ,@args)))
 
 
 ;;;; Webdriver
-(defmacro overleaf--with-webdriver (&rest body)
+(defmacro overleaf-connection--with-webdriver (&rest body)
   "Execute BODY if geckodriver is found and show an error message otherwise."
   `(if (not (executable-find "geckodriver"))
        (message-box "Please install geckodriver or set the cookies / document and project id manually.")
      ,@body))
 
-(defun overleaf--webdriver-set-cookies (session)
+(defun overleaf-connection--webdriver-set-cookies (session)
   "Set the cookies in the webdriver session SESSION."
-  (let ((cookie-domain (overleaf--cookie-domain))
-        (cookies (overleaf--get-cookies)))
+  (let ((cookie-domain (overleaf-connection--cookie-domain))
+        (cookies (overleaf-connection--get-cookies)))
     (when cookies
       (dolist (cookie (string-split cookies ";"))
         (pcase-let ((`(,name ,value) (string-split cookie "=")))
@@ -89,7 +89,7 @@ Version: 2024-04-03"
            `(:name ,(string-trim name) :value ,(string-trim value) :domain
                    ,cookie-domain)))))))
 
-(cl-defmacro overleaf--webdriver-wait-until-appears
+(cl-defmacro overleaf-connection--webdriver-wait-until-appears
     ((session xpath &optional (element-sym '_unused) (delay .1)) &rest body)
   "Wait until an element matching XPATH is found in SESSION, bind it to ELEMENT-SYM and execute BODY."
   (let ((not-found (gensym))
@@ -109,5 +109,5 @@ Version: 2024-04-03"
             (sleep-for ,delay)))))))
 
 
-(provide 'overleaf-utils)
-;;; overleaf-utils.el ends here
+(provide 'overleaf-connection-utils)
+;;; overleaf-connection-utils.el ends here
