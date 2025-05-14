@@ -293,6 +293,7 @@ the local overleaf version history."
   (overleaf--debug "Setting buffer version to %s" vers)
   (setq-local overleaf--doc-version vers))
 
+;;;###autoload
 (defun overleaf-authenticate (url)
   "Use selenium webdriver to log into overleaf URL and obtain the cookies.
 After running this command, wait for the browser-window to pop up and
@@ -584,6 +585,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
            (webdriver-error
             (sleep-for ,delay)))))))
 
+;;;###autoload
 (defun overleaf-find-file (url)
   "Use selenium webdriver to connect to the project under URL.
 To use this, open a file for editing in overleaf in your browser.  Then,
@@ -633,6 +635,7 @@ This message will self-destruct in 10 seconds!
                  (overleaf-connect)))))
        (webdriver-session-stop session)))))
 
+;;;###autoload
 (defun overleaf-connect ()
   "Connect to overleaf.
 Requires `overleaf-cookies' to be set.  Prompts for the
