@@ -1,42 +1,42 @@
 :PROPERTIES:
 :ID:       9d694771-66a1-46dc-873a-858289333e3d
 :END:
-#+title: Overleaf Connection Mode
+#+title: Overleaf Mode
 
-This packages provides ~overleaf-connection-mode~ that allows to
+This packages provides ~overleaf-mode~ that allows to
 live-edit $\LaTeX$ files on [[https://github.com/overleaf/overleaf][overleaf]].
 
 *This package is currently in alpha. Simultaneous edits from multiple sources are now supported but probably not fully bug free. However, the worst thing that can happen is that people on overleaf might get an "out of sync" message and have to reload the page.*
 [[file:assets/demo.gif]]
 
 To use this package, you can clone the repo, make it available in you
-load path and ~(require 'overleaf-connection)~. You can also use
+load path and ~(require 'overleaf)~. You can also use
 ~use-package~:
 #+begin_src elisp
-  (use-package overleaf-connection
-    :vc (:fetcher github :repo vale981/overleaf-connection.el))
+  (use-package overleaf
+    :vc (:fetcher github :repo vale981/overleaf.el))
 #+end_src
 
 * Setting Up
 ** Getting the Session Cookies
 First, there are the session cookies which can be obtained either
-through executing the command ~M-x overleaf-connection-authenticate~ or through the
+through executing the command ~M-x overleaf-authenticate~ or through the
 developer tools in your favorite browser.
 
 For the former option the [[https://github.com/mozilla/geckodriver][Mozilla gecko driver]] must be installed and
-the variable ~overleaf-connection-save-cookies~ must be set to a function that
+the variable ~overleaf-save-cookies~ must be set to a function that
 receives a string containing the cookies and saving it either directly
-into ~overleaf-connection-cookies~ via ~setq~ (that's the default) or stores it by
-some other means. In the latter case the variable ~overleaf-connection-cookies~
+into ~overleaf-cookies~ via ~setq~ (that's the default) or stores it by
+some other means. In the latter case the variable ~overleaf-cookies~
 must be assigned a function that returns the cookie string. For
 example, the cookies can be stored and loaded from a =gpg= encrypted
 file:
 #+begin_src elisp
-  (let ((cookie-file "~/.overleaf-connection-cookies.gpg"))
-      (setq overleaf-connection-save-cookies
-            (overleaf-connection-save-cookies-to-file cookie-file))
-      (setq overleaf-connection-cookies
-            (overleaf-connection-read-cookies-from-file cookie-file)))
+  (let ((cookie-file "~/.overleaf-cookies.gpg"))
+      (setq overleaf-save-cookies
+            (overleaf-save-cookies-to-file cookie-file))
+      (setq overleaf-cookies
+            (overleaf-read-cookies-from-file cookie-file)))
 #+end_src
 
 
@@ -48,13 +48,13 @@ header. It should have contents like:
   overleaf_session2=[redacted]; __stripe_mid=[redacted]; GCLB=[redacted]; __stripe_sid=redacted
 #+end_src
 
-Then set ~overleaf-connection-cookies~ to the cookies string
+Then set ~overleaf-cookies~ to the cookies string
 #+begin_src elisp
-  (setq overleaf-connection-cookies
+  (setq overleaf-cookies
         "((\"[overleaf domail (ovelerleaf.com)]\" \"overleaf_session2=[redacted]; __stripe_mid=[redacted]; GCLB=[redacted]; __stripe_sid=redacted\" [expiry time or nil]))")
 #+end_src
 or store the cookies by any means you'd like (see above) and set
-~overleaf-connection-cookies~ to a function that returns the cookie string. The
+~overleaf-cookies~ to a function that returns the cookie string. The
 cookie domain should only contain the part just before the TLD and the
 TLD. For example =www.overleaf.com= becomes =overleaf.com= (I don't make
 the rules...).
@@ -89,13 +89,13 @@ After having set things up, just use ~overleaf-connect~ or
 buffer, or in a buffer with the appropriate file-local variables set
 from a previous session).
 
-The overleaf instance can be customized by changing the ~overleaf-connection-url~
+The overleaf instance can be customized by changing the ~overleaf-url~
 variable.
 
 Calling ~overleaf-toggle-track-changes~ toggles whether the edits made
 in emacs will tracked (highlighted) by overleaf.
 
-Calling ~overleaf-connection-disconnect~ disconnects the current buffer from overleaf.
+Calling ~overleaf-disconnect~ disconnects the current buffer from overleaf.
 
 The modeline will indicate the connection status, as well as the
 number of changes that have yet to be synced to overleaf and whether the track-changes feature is enabled: ~(O: [<connection status>, <number of changes>, <track changes status>])~.
@@ -103,7 +103,7 @@ number of changes that have yet to be synced to overleaf and whether the track-c
 Calling ~overleaf-toggle-auto-save~ toggles auto-saving the buffer whenever a consistent state with overleaf is reached.
 
 ** Keybindings
-The keymap prefix can be customized with ~overleaf-connection-keymap-prefix~ which defaults to ~C-c C-o~.
+The keymap prefix can be customized with ~overleaf-keymap-prefix~ which defaults to ~C-c C-o~.
 
 The available keybindings
   - =[prefix] c= - (re)-connect
@@ -113,8 +113,8 @@ The available keybindings
   - =[prefix] b= - browse project
 
 * Troubleshooting
-Rather verbose logging may be enabled by setting ~overleaf-connection-debug~ to ~t~.
-The log message will be collected in a buffer =*overleaf-connection-[document-id]*=.
+Rather verbose logging may be enabled by setting ~overleaf-debug~ to ~t~.
+The log message will be collected in a buffer =*overleaf-[document-id]*=.
 
 Feel free to open an issue providing this log.
 
