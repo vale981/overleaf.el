@@ -1,4 +1,4 @@
-;;; overleaf.el --- Sync and track changes live with overleaf. -*- lexical-binding: t; -*-
+;;; overleaf.el --- Sync and track changes live with overleaf -*- lexical-binding: t; -*-
 ;; Copyright (C) 2020-2025 Valentin Boettcher
 
 
@@ -8,7 +8,7 @@
 ;; URL: https://github.com/vale981/overleaf.el
 ;; Package-Requires: ((emacs "30.1") (plz "0.9") (websocket "1.15") (webdriver "0.1"))
 ;; Version: 1.0.0
-;; Keywords: latex, overleaf
+;; Keywords: hypermedia, tex, comm
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; This file is not part of GNU Emacs.
 
@@ -32,8 +32,6 @@
 ;; Provides a minor mode that allows to sync the changes of a buffer
 ;; to an overleaf instance (https://github.com/overleaf/overleaf).
 
-(require 'overleaf-vars)
-(require 'overleaf-utils)
 (require 'webdriver)
 (require 'webdriver-firefox)
 (require 'websocket)
@@ -65,13 +63,13 @@ browser.")
 (defun overleaf-read-cookies-from-file (file)
   "Return a cookie saving function to load the cookie-string from FILE.
 To be used with `overleaf-cookies'."
-  #'(lambda ()
-      (with-temp-buffer
-        (insert-file-contents (expand-file-name file))
-        (string-trim (buffer-string)))))
+  (lambda ()
+    (with-temp-buffer
+      (insert-file-contents (expand-file-name file))
+      (string-trim (buffer-string)))))
 
-(defvar overleaf-save-cookies #'(lambda (cookies)
-                                  (setq overleaf-cookies cookies))
+(defvar overleaf-save-cookies (lambda (cookies)
+                                (setq overleaf-cookies cookies))
   "A function (lambda) that stores the session cookies.
 The function receives a string containing the session cookies and stores
 in a way that `overleaf-cookies' can access it.  The default
@@ -82,9 +80,9 @@ Another possibility is to store them into a gpg encrypted file.  See
 (defun overleaf-save-cookies-to-file (file)
   "Return a cookie saving function to save the cookie-string to FILE.
 To be used with `overleaf-save-cookies'."
-  #'(lambda (cookies)
-      (with-temp-file file
-        (insert cookies))))
+  (lambda (cookies)
+    (with-temp-file file
+      (insert cookies))))
 
 (defcustom overleaf-url "https://www.overleaf.com"
   "The url of the overleaf server."
@@ -265,6 +263,7 @@ BUFFER is the buffer value after applying the update."
 
 (defun overleaf--on-open (_websocket)
   "Handle the open even of the web-socket _WEBSOCKET."
+  (ignore _websocket)
   (let ((overleaf--buffer
          (gethash (websocket-url _websocket) overleaf--ws-url->buffer-table)))
 
@@ -461,19 +460,19 @@ no longer be possible, or will occur at a different location."
     (save-excursion
       (remq nil
             (mapcar
-             #'(lambda (op)
-                 (goto-char (1+ (plist-get op :p)))
-                 (if-let* ((insert (plist-get op :i)))
-                     (progn
-                       (insert insert)
+             (lambda (op)
+               (goto-char (1+ (plist-get op :p)))
+               (if-let* ((insert (plist-get op :i)))
+                   (progn
+                     (insert insert)
+                     (setq buffer-undo-list (memq nil buffer-undo-list))
+                     op)
+                 (if-let* ((delete (plist-get op :d)))
+                     (when (re-search-forward (regexp-quote delete) nil)
+                       (replace-match "")
+                       (overleaf--debug "applied delete %S %S" op `(:p ,(1- (point)) :d ,delete))
                        (setq buffer-undo-list (memq nil buffer-undo-list))
-                       op)
-                   (if-let* ((delete (plist-get op :d)))
-                       (when (re-search-forward (regexp-quote delete) nil)
-                         (replace-match "")
-                         (overleaf--debug "applied delete %S %S" op `(:p ,(1- (point)) :d ,delete))
-                         (setq buffer-undo-list (memq nil buffer-undo-list))
-                         `(:p ,(1- (point)) :d ,delete)))))
+                       `(:p ,(1- (point)) :d ,delete)))))
              edits)))))
 
 (cl-defun overleaf--apply-changes (edits version last-version hash)
@@ -543,23 +542,23 @@ them on top of the changes received from overleaf in the meantime."
                      overleaf--send-message-queue
                      (remq nil
                            (mapcar
-                            #'(lambda (change)
-                                (overleaf--debug "->>>>>>>>>>>>>>>>>>>>>>>>>>>> %S" change)
-                                (setq buffer-before-application (buffer-string))
-                                (if-let* ((edits
-                                           (overleaf--apply-changes-internal
-                                            (overleaf--queued-message-edits change))))
-                                    (progn
-                                      (setf (overleaf--queued-message-doc-version change) overleaf--doc-version)
-                                      (setf (overleaf--queued-message-hash change) (overleaf--get-hash))
-                                      (setf (overleaf--queued-message-edits change) edits)
-                                      (setf (overleaf--queued-message-buffer-before change) buffer-before-application)
-                                      (setf (overleaf--queued-message-buffer change) (buffer-string))
-                                      (overleaf--set-version (1+ overleaf--doc-version))
-                                      change)
-                                  (erase-buffer)
-                                  (insert buffer-before-application)
-                                  nil))
+                            (lambda (change)
+                              (overleaf--debug "->>>>>>>>>>>>>>>>>>>>>>>>>>>> %S" change)
+                              (setq buffer-before-application (buffer-string))
+                              (if-let* ((edits
+                                         (overleaf--apply-changes-internal
+                                          (overleaf--queued-message-edits change))))
+                                  (progn
+                                    (setf (overleaf--queued-message-doc-version change) overleaf--doc-version)
+                                    (setf (overleaf--queued-message-hash change) (overleaf--get-hash))
+                                    (setf (overleaf--queued-message-edits change) edits)
+                                    (setf (overleaf--queued-message-buffer-before change) buffer-before-application)
+                                    (setf (overleaf--queued-message-buffer change) (buffer-string))
+                                    (overleaf--set-version (1+ overleaf--doc-version))
+                                    change)
+                                (erase-buffer)
+                                (insert buffer-before-application)
+                                nil))
                             overleaf--send-message-queue))))))
 
 
@@ -607,6 +606,107 @@ them on top of the changes received from overleaf in the meantime."
     (setq-local buffer-read-only t)
     (save-buffer)
     (setq-local buffer-read-only nil)))
+
+(defun overleaf--splice-into (list vers content &optional unique)
+  "Splice a new element CONTENT into a an alist LIST sorted by VERS.
+If unique is t the element with key VERS will be overwritten."
+  (let ((head-vers (car (car list))))
+    (if (or (not head-vers) (< vers head-vers))
+        `((,vers . ,content) ,@list)
+      (if (and unique (= vers head-vers))
+          `((,vers . ,content) ,@(cdr list))
+        `(,(car list) ,@(overleaf--splice-into (cdr list) vers content))))))
+
+(defun overleaf--truncate (list max-length)
+  "Remove the first elements from LIST to make it MAX-LENGTH long."
+  (nthcdr (max 0 (- (length list) max-length)) list))
+
+(defun overleaf--url ()
+  "Return a sanitized version of the url without trailing slash."
+  (string-trim (string-trim overleaf-url) "" "/"))
+
+(defun overleaf--cookie-domain ()
+  "Return the domain for which the cookies will be valid from the current value of `overleaf-url'."
+  (let ((domain-parts (string-split (overleaf--url) "\\.")))
+    (string-join (last domain-parts 2) ".")))
+
+(defun overleaf--decode-utf8 (string)
+  "Decode the weird overleaf utf8 decoding in STRING."
+  (decode-coding-string
+   (mapconcat #'byte-to-string string) 'utf-8))
+
+(defun overleaf--random-string (&optional CountX)
+  "Return a random string of length COUNTX.
+
+Pilfered from
+URL `http://xahlee.info/emacs/emacs/elisp_insert_random_number_string.html'
+Version: 2024-04-03"
+  (let ((xcharset "abcdfghjkmnpqrstvwxyz23456789") xcount xvec)
+    (setq xcount (length xcharset))
+    (setq xvec (mapcar (lambda (_) (aref xcharset (random xcount))) (make-vector (if CountX CountX 5) 0)))
+    (mapconcat #'char-to-string xvec)))
+
+;;;; Logging
+(defun overleaf--debug (format-string &rest args)
+  "Print a debug message with format string FORMAT-STRING and arguments ARGS."
+  (when overleaf-debug
+    (if overleaf--buffer
+        (with-current-buffer overleaf--buffer
+          (with-current-buffer (get-buffer-create (format "*overleaf-%s*" overleaf-document-idea))
+            (setq buffer-read-only nil)
+            (goto-char (point-max))
+            (insert (apply #'format format-string args))
+            (insert "\n")
+            (setq buffer-read-only t)))
+      (apply #'warn format-string args))))
+
+(defmacro overleaf--warn (&rest args)
+  "Print a warning message passing ARGS on to `display-warning'."
+  `(display-warning 'overleaf (format ,@args)))
+
+(defmacro overleaf--message (string &rest args)
+  "Print a message with format string STRING and arguments ARGS."
+  `(message  ,(concat "Overleaf: " string) ,@args))
+
+
+;;;; Webdriver
+(defmacro overleaf--with-webdriver (&rest body)
+  "Execute BODY if geckodriver is found and show an error message otherwise."
+  `(if (not (executable-find "geckodriver"))
+       (message-box "Please install geckodriver or set the cookies / document and project id manually.")
+     ,@body))
+
+(defun overleaf--webdriver-set-cookies (session)
+  "Set the cookies in the webdriver session SESSION."
+  (let ((cookie-domain (overleaf--cookie-domain))
+        (cookies (overleaf--get-cookies)))
+    (when cookies
+      (dolist (cookie (string-split cookies ";"))
+        (pcase-let ((`(,name ,value) (string-split cookie "=")))
+          (webdriver-add-cookie
+           session
+           `(:name ,(string-trim name) :value ,(string-trim value) :domain
+                   ,cookie-domain)))))))
+
+(cl-defmacro overleaf--webdriver-wait-until-appears
+    ((session xpath &optional (element-sym '_unused) (delay .1)) &rest body)
+  "Wait until an element matching XPATH is found in SESSION, bind it to ELEMENT-SYM and execute BODY."
+  (let ((not-found (gensym))
+        (sel-var (gensym)))
+    `(let ((,sel-var
+            (make-instance 'webdriver-by
+                           :strategy "xpath"
+                           :selector ,xpath))
+           (,not-found t))
+       (while ,not-found
+         (condition-case nil
+             (let ((,element-sym
+                    (webdriver-find-element ,session ,sel-var)))
+               (setq ,not-found nil)
+               ,@body)
+           (webdriver-error
+            (sleep-for ,delay)))))))
+
 
 
 ;;;; Change Detection
@@ -844,8 +944,8 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                (setf (alist-get (overleaf--cookie-domain) full-cookies nil nil #'string=)
                      (list
                       (substring (apply #'concat
-                                        (mapcar #'(lambda (cookie)
-                                                    (format "%s=%s; " (alist-get 'name cookie) (alist-get 'value cookie)))
+                                        (mapcar (lambda (cookie)
+                                                  (format "%s=%s; " (alist-get 'name cookie) (alist-get 'value cookie)))
                                                 cookies))
                                  0 -2)
                       (alist-get 'expiry (aref cookies 0))))
