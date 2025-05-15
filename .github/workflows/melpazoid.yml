@@ -9,16 +9,22 @@ on: [push, pull_request]
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: nikolaik/python-nodejs:python3.10-nodejs24-bullseye
     steps:
       - uses: actions/checkout@v3
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.10"
-      - name: Install
+      # - uses: actions/setup-python@v5
+      #   with:
+      #     python-version: "3.13"
+      - name: Install emacs
         run: |
-          python -m pip install --upgrade pip
-          sudo apt-get install emacs && emacs --version
+          apt-get update
+          apt-get install -y docker.io emacs-nox && emacs --version
+      - name: Install
+        env:
+          ENV PIP_ROOT_USER_ACTION: ignore
+        run: |
+          python -m pip  install --upgrade pip
           git clone https://github.com/riscy/melpazoid.git ~/melpazoid
           pip install ~/melpazoid
       - name: Run
