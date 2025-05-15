@@ -273,11 +273,10 @@ BUFFER is the buffer value after applying the update."
        (websocket-openp overleaf--websocket)
        (>= overleaf--doc-version 0)))
 
-(defun overleaf--on-open (_websocket)
-  "Handle the open even of the web-socket _WEBSOCKET."
-  (ignore _websocket)
+(defun overleaf--on-open (websocket)
+  "Handle the open even of the web-socket WEBSOCKET."
   (let ((overleaf--buffer
-         (gethash (websocket-url _websocket) overleaf--ws-url->buffer-table)))
+         (gethash (websocket-url websocket) overleaf--ws-url->buffer-table)))
 
     (with-current-buffer overleaf--buffer
       (overleaf--update-modeline)
