@@ -158,6 +158,9 @@ See `overleaf--message-timer'.")
 (defvar-local overleaf--doc-version -1
   "Current version of the document.")
 
+(defvar-local overleaf--sequence-id -1
+  "An internal counter for the websocket communication.")
+
 (defvar-local overleaf--mode-line ""
   "Contents of the mode-line indicator.")
 
@@ -199,7 +202,6 @@ recent updates.  It has elements of the form `((from-version
 
 (cl-defstruct overleaf--queued-message
   "A container that holds a queued message."
-  sequence-id
   edits
   doc-version
   hash
@@ -221,6 +223,16 @@ BUFFER is the buffer value after applying the update."
   to-version
   hash
   buffer)
+
+
+;;;; Macros
+(defmacro overleaf--warn (&rest args)
+  "Print a warning message passing ARGS on to `display-warning'."
+  `(display-warning 'overleaf (format ,@args)))
+
+(defmacro overleaf--message (string &rest args)
+  "Print a message with format string STRING and arguments ARGS."
+  `(message  ,(concat "Overleaf: " string) ,@args))
 
 ;;;; Communication
 
@@ -395,7 +407,7 @@ BUFFER is the buffer value after applying the update."
         (save-buffer)))))
 
 (defun overleaf--push-to-recent-updates (update)
-  "Splice the UPDATE of type `overleaf--update' into 'overleaf--recent-updates'."
+  "Splice the UPDATE of type `overleaf--update' into `overleaf--recent-updates'."
   (let ((from-version (overleaf--update-from-version update))
         (to-version (overleaf--update-to-version update)))
     (when (and from-version to-version overleaf--buffer)
@@ -424,7 +436,7 @@ BUFFER is the buffer value after applying the update."
               (websocket-send-text
                overleaf--websocket
                (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":%s%s,\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
-                       (overleaf--queued-message-sequence-id message)
+                       overleaf--sequence-id
                        overleaf-document-idea
                        overleaf-document-idea
                        (json-encode (apply #'vector (overleaf--queued-message-edits message)))
@@ -439,7 +451,9 @@ BUFFER is the buffer value after applying the update."
                overleaf--websocket
                (format
                 "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
-                (current-line) (current-column) overleaf-document-idea))
+                (line-number-at-pos) (current-column) overleaf-document-idea))
+
+              (setq-local overleaf--sequence-id (1+ overleaf--sequence-id))
 
               (setq-local overleaf--edit-in-flight
                           (make-overleaf--update
@@ -660,33 +674,12 @@ Version: 2024-04-03"
             (setq buffer-read-only t)))
       (apply #'warn format-string args))))
 
-(defmacro overleaf--warn (&rest args)
-  "Print a warning message passing ARGS on to `display-warning'."
-  `(display-warning 'overleaf (format ,@args)))
-
-(defmacro overleaf--message (string &rest args)
-  "Print a message with format string STRING and arguments ARGS."
-  `(message  ,(concat "Overleaf: " string) ,@args))
-
-
 ;;;; Webdriver
 (defmacro overleaf--with-webdriver (&rest body)
   "Execute BODY if geckodriver is found and show an error message otherwise."
   `(if (not (executable-find "geckodriver"))
        (message-box "Please install geckodriver or set the cookies / document and project id manually.")
      ,@body))
-
-(defun overleaf--webdriver-set-cookies (session)
-  "Set the cookies in the webdriver session SESSION."
-  (let ((cookie-domain (overleaf--cookie-domain))
-        (cookies (overleaf--get-cookies)))
-    (when cookies
-      (dolist (cookie (string-split cookies ";"))
-        (pcase-let ((`(,name ,value) (string-split cookie "=")))
-          (webdriver-add-cookie
-           session
-           `(:name ,(string-trim name) :value ,(string-trim value) :domain
-                   ,cookie-domain)))))))
 
 (cl-defmacro overleaf--webdriver-wait-until-appears
     ((session xpath &optional (element-sym '_unused) (delay .1)) &rest body)
@@ -707,6 +700,18 @@ Version: 2024-04-03"
            (webdriver-error
             (sleep-for ,delay)))))))
 
+
+(defun overleaf--webdriver-set-cookies (session)
+  "Set the cookies in the webdriver session SESSION."
+  (let ((cookie-domain (overleaf--cookie-domain))
+        (cookies (overleaf--get-cookies)))
+    (when cookies
+      (dolist (cookie (string-split cookies ";"))
+        (pcase-let ((`(,name ,value) (string-split cookie "=")))
+          (webdriver-add-cookie
+           session
+           `(:name ,(string-trim name) :value ,(string-trim value) :domain
+                   ,cookie-domain)))))))
 
 
 ;;;; Change Detection
@@ -836,7 +841,6 @@ Mainly used to detect switchover between deletion and insertion."
             (overleaf--debug "======> FLUSH %S %i" (buffer-name) overleaf--doc-version)
             (overleaf--queue-message
              (make-overleaf--queued-message
-              :sequence-id sequence-id
               :edits (mapcar #'copy-sequence overleaf--edit-queue)
               :doc-version overleaf--doc-version
               :hash (overleaf--get-hash)
@@ -844,7 +848,6 @@ Mainly used to detect switchover between deletion and insertion."
               :buffer-before overleaf--buffer-before-edit-queue
               :buffer buf-string))
             (setq-local overleaf--buffer-before-edit-queue (concat buf-string))
-            (setq-local sequence-id (1+ sequence-id))
             (overleaf--set-version (1+ overleaf--doc-version))
             (setq overleaf--edit-queue '())
             (setq-local buffer-read-only nil)))))))
@@ -985,7 +988,7 @@ This message will self-destruct in 10 seconds!
            (webdriver-goto-url session (overleaf--url))
 
            (overleaf--webdriver-wait-until-appears
-            (session "//div[@class='file-tree-inner']" file-list)
+            (session "//div[@class='file-tree-inner']")
             (webdriver-execute-synchronous-script session "document.evaluate(\"//div[@class='file-tree-inner']\", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click()" []))
 
            (overleaf--webdriver-wait-until-appears
@@ -1043,7 +1046,10 @@ them in the file."
             (setq-local overleaf--edit-in-flight nil)
             (setq-local buffer-read-only t)
             (setq-local overleaf--doc-version -1)
-            (setq-local sequence-id 2)
+
+            ;; magic value, don't ask me why
+            (setq-local overleaf--sequence-id 2)
+
             (puthash
              (websocket-url
               (setq-local overleaf--websocket
