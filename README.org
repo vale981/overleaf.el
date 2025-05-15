@@ -1,14 +1,18 @@
 :PROPERTIES:
 :ID:       9d694771-66a1-46dc-873a-858289333e3d
 :END:
-#+title: Overleaf Mode
+#+title: Overleaf.el
 
+#+HTML: <img src="./assets/overleaf-el-logo.svg" align="right" style="height: 150px;">
 This packages provides ~overleaf-mode~ that allows to
 live-edit $\LaTeX$ files on [[https://github.com/overleaf/overleaf][overleaf]].
 
 *This package is currently in alpha. Simultaneous edits from multiple sources are now supported but probably not fully bug free. However, the worst thing that can happen is that people on overleaf might get an "out of sync" message and have to reload the page.*
+
+* Demo
 [[file:assets/demo.gif]]
 
+* Installation
 To use this package, you can clone the repo, make it available in you
 load path and ~(require 'overleaf)~. You can also use
 ~use-package~:
