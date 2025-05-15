@@ -587,7 +587,7 @@ them on top of the changes received from overleaf in the meantime."
                        (not overleaf--send-message-queue)
                        (= (- version last-version) 1)
                        (not (string= (overleaf--get-hash) hash)))
-              (overleaf--warn "Hash mismatch... reconnecting" (overleaf--get-hash) hash)
+              (overleaf--warn "Hash mismatch... reconnecting")
               (setq-local buffer-read-only t)
               (overleaf-connect)))))
       (goto-char point))))
