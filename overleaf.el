@@ -1121,15 +1121,13 @@ them in the file."
   "Define a mapping of KEY to FUNCTION with the appropriate prefix."
   `(cons (kbd ,(concat overleaf-keymap-prefix " " key))  #',function))
 
-
-
 ;;;###autoload
 (define-minor-mode overleaf-mode
   "Toggle Overleaf Connection mode.
 Interactively with no argument, this command toggles the mode."
 
   :init-value nil
-  :ligther " Overleaf"
+  :lighter "Overleaf"
   :keymap
   (list
    (overleaf--key "c" overleaf-connect)
