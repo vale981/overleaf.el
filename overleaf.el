@@ -113,7 +113,7 @@ To be used with `overleaf-save-cookies'."
 When having a project opened in the browser the URL should read
 \"https://[overleaf-domain]/project/[project-id]\".")
 
-(defvar-local overleaf-document-idea nil
+(defvar-local overleaf-document-id nil
   "The overleaf document id as a string.
 
 The id is most easily obtained by downloading the file that is to be
@@ -313,7 +313,7 @@ BUFFER is the buffer value after applying the update."
          (gethash (websocket-url ws) overleaf--ws-url->buffer-table)))
     (with-current-buffer overleaf--buffer
       (when overleaf--websocket
-        (overleaf--message "Websocket for document %s closed." overleaf-document-idea)
+        (overleaf--message "Websocket for document %s closed." overleaf-document-id)
         (setq-local buffer-read-only nil)
         (cancel-timer overleaf--message-timer)
         (cancel-timer overleaf--flush-edit-queue-timer)
@@ -367,7 +367,7 @@ BUFFER is the buffer value after applying the update."
                 (overleaf--warn "Update error %S" (car (plist-get message :args)))
                 (overleaf-connect))
                ("joinProjectResponse"
-                (websocket-send-text ws (format "5:2+::{\"name\":\"joinDoc\",\"args\":[\"%s\",{\"encodeRanges\":true}]}" overleaf-document-idea)))
+                (websocket-send-text ws (format "5:2+::{\"name\":\"joinDoc\",\"args\":[\"%s\",{\"encodeRanges\":true}]}" overleaf-document-id)))
                ("serverPing"
                 (overleaf--debug "Received Ping -> PONG")
                 (let ((res (concat id ":::" (json-encode `(:name "clientPong" :args ,(plist-get message :args))))))
@@ -437,8 +437,8 @@ BUFFER is the buffer value after applying the update."
                overleaf--websocket
                (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":%s%s,\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
                        overleaf--sequence-id
-                       overleaf-document-idea
-                       overleaf-document-idea
+                       overleaf-document-id
+                       overleaf-document-id
                        (json-encode (apply #'vector (overleaf--queued-message-edits message)))
                        (if (overleaf--queued-message-track-changes message)
                            (format ",\"meta\": {\"tc\":\"%s\"}"
@@ -451,7 +451,7 @@ BUFFER is the buffer value after applying the update."
                overleaf--websocket
                (format
                 "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
-                (line-number-at-pos) (current-column) overleaf-document-idea))
+                (line-number-at-pos) (current-column) overleaf-document-id))
 
               (setq-local overleaf--sequence-id (1+ overleaf--sequence-id))
 
@@ -607,7 +607,7 @@ them on top of the changes received from overleaf in the meantime."
       (let ((overleaf--is-overleaf-change nil)
             (track-changes overleaf-track-changes))
         (setq-local overleaf-track-changes nil)
-        (add-file-local-variable 'overleaf-document-idea overleaf-document-idea)
+        (add-file-local-variable 'overleaf-document-id overleaf-document-id)
         (add-file-local-variable 'overleaf-project-id overleaf-project-id)
         (add-file-local-variable 'overleaf-track-changes track-changes)
         (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
@@ -666,7 +666,7 @@ Version: 2024-04-03"
   (when overleaf-debug
     (if overleaf--buffer
         (with-current-buffer overleaf--buffer
-          (with-current-buffer (get-buffer-create (format "*overleaf-%s*" overleaf-document-idea))
+          (with-current-buffer (get-buffer-create (format "*overleaf-%s*" overleaf-document-id))
             (setq buffer-read-only nil)
             (goto-char (point-max))
             (insert (apply #'format format-string args))
@@ -993,7 +993,7 @@ This message will self-destruct in 10 seconds!
 
            (overleaf--webdriver-wait-until-appears
             (session "//li[@class='selected']/div" selected)
-            (setq-local overleaf-document-idea
+            (setq-local overleaf-document-id
                         (webdriver-get-element-attribute session selected "data-file-id")))
 
            (let ((url (webdriver-get-current-url session)))
@@ -1012,7 +1012,7 @@ This message will self-destruct in 10 seconds!
   "Connect current buffer to overleaf.
 
 Requires `overleaf-cookies' to be set.  Prompts for the
-`overleaf-project-id' and `overleaf-document-idea' and saves
+`overleaf-project-id' and `overleaf-document-id' and saves
 them in the file."
   (interactive)
 
@@ -1024,8 +1024,8 @@ them in the file."
           (setq-local overleaf-project-id
                       (or overleaf-project-id
                           (read-from-minibuffer "Overleaf project id: ")))
-          (setq-local overleaf-document-idea
-                      (or overleaf-document-idea
+          (setq-local overleaf-document-id
+                      (or overleaf-document-id
                           (read-from-minibuffer "Overleaf document id: ")))
           (let* ((cookies (overleaf--get-cookies))
                  (ws-id
@@ -1034,7 +1034,7 @@ them in the file."
                           :headers `(("Cookie" . ,cookies)
                                      ("Origin" . ,(overleaf--url)))) ":"))))
 
-            (overleaf--debug "Connecting %s %s" overleaf-project-id overleaf-document-idea)
+            (overleaf--debug "Connecting %s %s" overleaf-project-id overleaf-document-id)
 
             (setq-local overleaf--last-good-state nil)
             (setq-local overleaf--history '())
