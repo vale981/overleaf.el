@@ -18,7 +18,17 @@ load path and ~(require 'overleaf)~. You can also use
 ~use-package~:
 #+begin_src elisp
   (use-package overleaf
-    :vc (:fetcher github :repo vale981/overleaf.el))
+    :vc (:fetcher github :repo vale981/overleaf.el)
+    :custom
+    (overleaf-use-nerdfont t "Use nerdfont icons for the modeline.")
+    :config
+    ;; Example: load/save cookies from GPG encrypted file.
+    ;;          (remove the .gpg extension to save unencrypted)
+    (let ((cookie-file "~/.overleaf-cookies.gpg"))
+      (setq overleaf-save-cookies
+            (overleaf-save-cookies-to-file cookie-file))
+      (setq overleaf-cookies
+            (overleaf-read-cookies-from-file cookie-file))))
 #+end_src
 
 * Setting Up
@@ -105,6 +115,13 @@ The modeline will indicate the connection status, as well as the
 number of changes that have yet to be synced to overleaf and whether the track-changes feature is enabled: ~(O: [<connection status>, <number of changes>, <track changes status>])~.
 
 Calling ~overleaf-toggle-auto-save~ toggles auto-saving the buffer whenever a consistent state with overleaf is reached.
+
+** Nicer modeline icons
+If you have a font with nerd-font symbol support you can set:
+#+begin_src emacs-lisp
+    (setopt overleaf-use-nerdfont t)
+#+end_src
+
 
 ** Keybindings
 The keymap prefix can be customized with ~overleaf-keymap-prefix~ which defaults to ~C-c C-o~.

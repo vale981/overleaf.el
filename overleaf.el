@@ -107,6 +107,11 @@ To be used with `overleaf-save-cookies'."
   :type 'boolean
   :group 'overleaf-mode)
 
+(defcustom overleaf-use-nerdfont nil
+  "Whether to use nerd-font icons for the modeline."
+  :type 'boolean
+  :group 'overleaf-mode)
+
 (defvar-local overleaf-auto-save nil
   "Whether to auto-save the buffer each time a change is synced.")
 
@@ -1133,13 +1138,13 @@ to the default tooltip text."
   (setq-local
    overleaf--mode-line
    (list
-    (overleaf--mode-line-item "(: ")
+    (overleaf--mode-line-item (if overleaf-use-nerdfont "(: " "(Ovl: "))
     (if (websocket-openp overleaf--websocket)
         (list
          (cond ((= overleaf--doc-version -1)
-                (overleaf--mode-line-item "⟲" "connecting"))
+                (overleaf--mode-line-item (if overleaf-use-nerdfont "⟲" "...") "connecting"))
                ((zerop (length overleaf--send-message-queue))
-                (overleaf--mode-line-item "✓" "connected\nno pending messages"))
+                (overleaf--mode-line-item (if overleaf-use-nerdfont "✓" "C") "connected\nno pending messages"))
                (t
                 (overleaf--mode-line-item
                  (format "%i" (length overleaf--send-message-queue))
@@ -1147,7 +1152,7 @@ to the default tooltip text."
          (if overleaf-track-changes
              (overleaf--mode-line-item ", t" "track-changes: on")
            ""))
-      (overleaf--mode-line-item "" "not connected"))
+      (overleaf--mode-line-item (if overleaf-use-nerdfont "" "X") "not connected"))
     (overleaf--mode-line-item ")")))
   (force-mode-line-update t))
 
