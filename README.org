@@ -4,6 +4,10 @@
 #+title: Overleaf.el
 
 #+HTML: <img src="./assets/overleaf-el-logo.svg" align="right" style="height: 150px;">
+
+# MELPA badge image.
+[[https://melpa.org/#/overleaf][file:https://melpa.org/packages/overleaf-badge.svg]]
+
 This packages provides ~overleaf-mode~ that allows to
 live-edit $\LaTeX$ files on [[https://github.com/overleaf/overleaf][overleaf]].
 
@@ -18,7 +22,6 @@ load path and ~(require 'overleaf)~. You can also use
 ~use-package~:
 #+begin_src elisp
   (use-package overleaf
-    :vc (:fetcher github :repo vale981/overleaf.el)
     :custom
     (overleaf-use-nerdfont t "Use nerfont icons for the modeline.")
     :config
