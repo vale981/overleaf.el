@@ -60,6 +60,8 @@ cookies from a gpg encrypted file.  See
 The cookies are most easily obtained from the developer tools in the
 browser.")
 
+
+;;;###autoload
 (defun overleaf-read-cookies-from-file (file)
   "Return a cookie saving function to load the cookie-string from FILE.
 To be used with `overleaf-cookies'."
@@ -77,6 +79,7 @@ implementation simply sets `overleaf-cookies' to the string value.
 Another possibility is to store them into a gpg encrypted file.  See
 `overleaf-save-cookies-to-file'.")
 
+;;;###autoload
 (defun overleaf-save-cookies-to-file (file)
   "Return a cookie saving function to save the cookie-string to FILE.
 To be used with `overleaf-save-cookies'."
