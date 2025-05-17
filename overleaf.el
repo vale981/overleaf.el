@@ -164,6 +164,9 @@ See `overleaf--message-timer'.")
 (defvar-local overleaf--mode-line ""
   "Contents of the mode-line indicator.")
 
+;; Do not ignore :propertize forms.  See variable `mode-line-format'.
+(put 'overleaf--mode-line 'risky-local-variable t)
+
 (defvar overleaf--ws-url->buffer-table (make-hash-table :test #'equal)
   "A hash table associating web-sockets to buffers.")
 
@@ -199,6 +202,25 @@ recent updates.  It has elements of the form `((from-version
 
 (defvar-local overleaf--receiving nil
   "When t we are currently in the process of receiving and processing an update.")
+
+(easy-menu-define overleaf-menu nil "Overleaf"
+  '("Overleaf"
+    ["Connect" overleaf-connect
+     :help "Connect to overleaf"]
+    ["Disconnect" overleaf-disconnect
+     :help "Disconnect from overleaf"]
+    ["Toggle auto save" overleaf-toggle-auto-save
+     :help "Toggle auto-save on overleaf"]
+    ["Toggle track changes" overleaf-toggle-track-changes
+     :help "Toggle track-changes on overleaf"]
+    ["Browse project" overleaf-browse-project
+     :help "Browse project with `browse-url'"
+     :active overleaf-project-id]))
+
+(defvar overleaf--menu-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map [mode-line down-mouse-1] overleaf-menu)
+    map))
 
 (cl-defstruct overleaf--queued-message
   "A container that holds a queued message."
@@ -1082,23 +1104,39 @@ them in the file."
     (setq-local overleaf--force-close nil)
     (remhash overleaf--websocket overleaf--ws-url->buffer-table)))
 
+(defun overleaf--mode-line-item (text &rest help-lines)
+  "Return a mode-line item diplaying TEXT having a tooltip with HELP-LINES.
+HELP-LINES must consist of string arguments, which are appended
+to the default tooltip text."
+  `(:propertize
+    ,text
+    keymap ,overleaf--menu-map
+    help-echo ,(string-join (append '("overleaf"
+                                      "mouse-1: Display minor mode menu")
+                                    help-lines)
+                            "\n")))
+
 (defun overleaf--update-modeline ()
   "Update the modeline string to reflect the current connection status."
-  (setq-local overleaf--mode-line
-              (concat
-               "(: "
-               (if (websocket-openp overleaf--websocket)
-                   (concat "["
-                           (if (= overleaf--doc-version -1)
-                               "⟲"
-                             "✓")
-                           (format ", %i" (length overleaf--send-message-queue))
-                           (if overleaf-track-changes
-                               ", t"
-                             "")
-                           "]")
-                 "[ ]")
-               ")"))
+  (setq-local
+   overleaf--mode-line
+   (list
+    (overleaf--mode-line-item "(: ")
+    (if (websocket-openp overleaf--websocket)
+        (list
+         (cond ((= overleaf--doc-version -1)
+                (overleaf--mode-line-item "⟲" "connecting"))
+               ((zerop (length overleaf--send-message-queue))
+                (overleaf--mode-line-item "✓" "connected\nno pending messages"))
+               (t
+                (overleaf--mode-line-item
+                 (format "%i" (length overleaf--send-message-queue))
+                 "connected\nnumber of outgoing messages in the queue")))
+         (if overleaf-track-changes
+             (overleaf--mode-line-item ", t" "track-changes: on")
+           ""))
+      (overleaf--mode-line-item "❌" "not connected"))
+    (overleaf--mode-line-item ")")))
   (force-mode-line-update t))
 
 (defun overleaf--init ()
@@ -1127,7 +1165,7 @@ them in the file."
 Interactively with no argument, this command toggles the mode."
 
   :init-value nil
-  :lighter "Overleaf"
+  :lighter nil ; Use `overleaf--mode-line' instead.
   :keymap
   (list
    (overleaf--key "c" overleaf-connect)
