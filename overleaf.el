@@ -1135,7 +1135,7 @@ to the default tooltip text."
          (if overleaf-track-changes
              (overleaf--mode-line-item ", t" "track-changes: on")
            ""))
-      (overleaf--mode-line-item "❌" "not connected"))
+      (overleaf--mode-line-item "" "not connected"))
     (overleaf--mode-line-item ")")))
   (force-mode-line-update t))
 
