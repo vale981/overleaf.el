@@ -211,7 +211,8 @@ recent updates.  It has elements of the form `((from-version
 (defvar-local overleaf--receiving nil
   "When t we are currently in the process of receiving and processing an update.")
 
-(easy-menu-define overleaf-menu nil "Overleaf"
+(easy-menu-define overleaf-menu nil
+  "Overleaf menu."
   '("Overleaf"
     ["Connect" overleaf-connect
      :help "Connect to overleaf"]
