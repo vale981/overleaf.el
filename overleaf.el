@@ -392,7 +392,9 @@ BUFFER is the buffer value after applying the update."
         (secure-hash 'sha1 (format "blob %i\x00%s" (length buff) buff))))))
 
 (defun overleaf--push-to-history (version &optional buffer-string)
-  "Push the contents of the buffer or BUFFER-STRING of VERSION to the local overleaf version history."
+  "Push the buffer to the version history.
+Push the contents of the buffer or BUFFER-STRING of VERSION to the local
+overleaf version history."
   (when (and version overleaf--buffer)
     (with-current-buffer overleaf--buffer
       (setq-local overleaf--history
@@ -423,7 +425,10 @@ BUFFER is the buffer value after applying the update."
   (setq overleaf--send-message-queue (nconc overleaf--send-message-queue (list message))))
 
 (defun overleaf--send-queued-message (&optional buffer)
-  "Send a message from the edit message queue of BUFFER if there is no other edit in flight."
+  "Send the next message in the message queue to overleaf.
+
+Send a message from the edit message queue of BUFFER if there is no
+other edit in flight."
   (let ((overleaf--buffer (or buffer overleaf--buffer)))
     (when overleaf--buffer
       (unless (or overleaf--edit-in-flight overleaf--receiving)
@@ -639,7 +644,8 @@ If unique is t the element with key VERS will be overwritten."
   (string-trim (string-trim overleaf-url) "" "/"))
 
 (defun overleaf--cookie-domain ()
-  "Return the domain for which the cookies will be valid from the current value of `overleaf-url'."
+  "Return the domain for which the cookies will be valid.
+The value is computed from the current value of `overleaf-url'."
   (let ((domain-parts (string-split (overleaf--url) "\\.")))
     (string-join (last domain-parts 2) ".")))
 
@@ -682,7 +688,8 @@ Version: 2024-04-03"
 
 (cl-defmacro overleaf--webdriver-wait-until-appears
     ((session xpath &optional (element-sym '_unused) (delay .1)) &rest body)
-  "Wait until an element matching XPATH is found in SESSION, bind it to ELEMENT-SYM and execute BODY."
+  "Wait until an element matching XPATH is found in SESSION.
+The element is then bound to ELEMENT-SYM and the BODY is executed."
   (let ((not-found (gensym))
         (sel-var (gensym)))
     `(let ((,sel-var
@@ -724,7 +731,9 @@ Version: 2024-04-03"
 (defvar-local overleaf--deletion-buffer "")
 
 (defun overleaf--after-change-function (begin end length)
-  "The after change hook that detects a change in region BEGIN - END of length LENGTH to be sent to overleaf."
+  "The after change hook that is called after the buffer changed.
+The change is in the region BEGIN - END of length LENGTH to be sent to
+overleaf."
   (let ((overleaf--buffer (current-buffer)))
     (overleaf--debug "after (%i %i) %i (%i %i) %S" begin end length overleaf--last-change-begin overleaf--last-change-end overleaf--last-change-type)
     (unless overleaf--is-overleaf-change
