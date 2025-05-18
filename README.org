@@ -147,6 +147,16 @@ The log message will be collected in a buffer =*overleaf-[document-id]*=.
 
 Feel free to open an issue providing this log.
 
+** Customizing WebDriver behaviour
+Use advice to customize the [[https://developer.mozilla.org/en-US/docs/Web/WebDriver/Reference/Capabilities/firefoxOptions][options]] (like the path to the Firefox binary, what profile should be used, etc) passed to ~geckodriver~ .
+For example, this code snippet could be helpful for users with a non-standard Firefox installation (i.e. not at =/Applications/Firefox.app/Contents/MacOS/firefox-bin= for macOS):
+#+begin_src elisp
+(define-advice overleaf--webdriver-make-session (:override () unorthodox-firefox-path)
+  (let ((caps (make-instance 'webdriver-capabilities-firefox)))
+    (webdriver-capabilities-add caps :binary (expand-file-name "~/Applications/Home Manager Apps/Firefox Nightly.app/Contents/MacOS/firefox-bin") t)
+    (make-instance 'webdriver-session :requested-capabilities caps)))
+#+end_src
+
 * Alternatives
 - [[https://github.com/fregante/GhostText][GhostText]] works pretty well in conjunction with [[https://github.com/alpha22jp/atomic-chrome][Atomic Chrome]]
 
