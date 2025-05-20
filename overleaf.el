@@ -1007,28 +1007,44 @@ Stolen from `rainbow-identifiers.el'."
 
 The overlay stores the ID, the NAME, the EMAIL of the user and is
 displayed at line ROW and char COLUMN."
-  (let ((color (overleaf--id-to-color id)))
-    (save-excursion
-      (goto-char (overleaf--row-col-to-pos row column))
-      (let* ((pos (point))
-             (overlay (make-overlay pos pos nil nil nil))
-             (show-name-fn (lambda (&rest _)
-                             (overleaf--name-posframe-show overlay))))
-        (overlay-put overlay 'before-string (propertize "||" 'face `(:height 1 :width expanded :background ,color)))
-        (overlay-put overlay 'id id)
-        (overlay-put overlay 'name name)
-        (overlay-put overlay 'email email)
-        (overlay-put overlay 'help-echo name)
-        (overlay-put overlay 'color color)
-        (overlay-put overlay 'modification-hooks
-                     (list show-name-fn))
-        (overlay-put overlay 'insert-in-front-hooks
-                     (list show-name-fn))
-        (overlay-put overlay 'insert-in-behind-hooks
-                     (list show-name-fn))
+  (with-current-buffer overleaf--buffer
+    (let ((color (overleaf--id-to-color id)))
+      (save-excursion
+        (goto-char (overleaf--row-col-to-pos row column))
+        (let* ((pos (point))
+               ;; this hack is necessary, as otherwise the font
+               ;; property won't be applied
+               (face (overlay-put (make-overlay pos
+                                                (save-excursion
+                                                  (forward-char)
+                                                  (point)))
+                                  'face `(:foreground "white" :background ,color))))
+          ;; (overlay-put overlay 'face `(:foreground "white" :background ,color))
+          (let* ((overlay (seq-find
+                           (lambda (ovl)
+                             (message "%S" (overlay-get ovl 'face))
+                             (let ((ovl-face (overlay-get ovl 'face)))
+                               (cl-every #'equal ovl-face face)))
+                           (overlays-at pos)))
+                 (show-name-fn (lambda (&rest _)
+                                 (overleaf--name-posframe-show overlay))))
+            (message "%S" overlay)
+            ;; (overlay-put overlay 'id id)
+            ;; (overlay-put overlay 'priority 1000)
+            ;; (overlay-put overlay 'name name)
+            ;; (overlay-put overlay 'email email)
+            ;; (overlay-put overlay 'help-echo name)
+            ;; (overlay-put overlay 'color color)
+            ;; (overlay-put overlay 'modification-hooks
+            ;;              (list show-name-fn))
+            ;; (overlay-put overlay 'insert-in-front-hooks
+            ;;              (list show-name-fn))
+            ;; (overlay-put overlay 'insert-in-behind-hooks
+            ;;              (list show-name-fn))
+            ;; (overlay-put overlay 'face face)
 
-        overlay)
-      )))
+            overlay))
+        ))))
 
 (defun overleaf--update-cursor (id name email row column)
   "Create or update a cursor overlay identified by ID.
@@ -1037,12 +1053,13 @@ The overlay stores the ID, the NAME, the EMAIL and is displayed
 at line ROW and char COLUMN."
   (with-current-buffer overleaf--buffer
     (unless (equal id overleaf--user-id)
-      (let ((overlay
-             (or (gethash id overleaf--user-positions)
-                 (puthash id (overleaf--make-cursor-overlay id name email row column)
-                          overleaf--user-positions)))
-            (newpos (overleaf--row-col-to-pos row column)))
-        (move-overlay overlay newpos newpos)
+      (let* ((overlay
+              ;; recreating the overlay is necessary as otherwise the
+              ;; face properties won't be applied
+              (progn (remhash id overleaf--user-positions)
+                     (puthash id (overleaf--make-cursor-overlay id name email row column)
+                              overleaf--user-positions)))
+             (newpos (overleaf--row-col-to-pos row column)))
         (overleaf--name-posframe-show overlay)))))
 
 (defun overleaf--remove-cursor (id)
