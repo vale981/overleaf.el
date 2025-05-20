@@ -115,9 +115,11 @@ in emacs will tracked (highlighted) by overleaf.
 Calling ~overleaf-disconnect~ disconnects the current buffer from overleaf.
 
 The modeline will indicate the connection status, as well as the
-number of changes that have yet to be synced to overleaf and whether the track-changes feature is enabled: ~(O: [<connection status>, <number of changes>, <track changes status>])~.
+number of changes that have yet to be synced to overleaf and whether the track-changes feature is enabled: ~(O: <connection status>, <number of changes>, <track changes status>)~.
 
 Calling ~overleaf-toggle-auto-save~ toggles auto-saving the buffer whenever a consistent state with overleaf is reached.
+
+With ~overleaf-goto-cursor~ one can jump to the cursor of another user.
 
 ** Nicer modeline icons
 If you have a font with nerd-font symbol support you can set:
@@ -135,6 +137,7 @@ The available keybindings
   - =[prefix] t= - toggle track-changes
   - =[prefix] s= - toggle auto-save
   - =[prefix] b= - browse project
+  - =[prefix] b= - go to the cursor of another user
 
 * Troubleshooting
 Rather verbose logging may be enabled by setting ~overleaf-debug~ to ~t~.

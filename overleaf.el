@@ -6,7 +6,7 @@
 ;; Maintainer: Valentin Boettcher <overleaf at protagon.space>
 ;; Created: March 18, 2025
 ;; URL: https://github.com/vale981/overleaf.el
-;; Package-Requires: ((emacs "29.4") (plz "0.9") (websocket "1.15") (webdriver "0.1"))
+;; Package-Requires: ((emacs "29.4") (plz "0.9") (websocket "1.15") (webdriver "0.1") (posframe "1.4.4")
 ;; Version: 1.1.1-pre
 ;; Keywords: hypermedia, tex, comm
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -36,6 +36,7 @@
 (require 'webdriver-firefox)
 (require 'websocket)
 (require 'plz)
+(require 'posframe)
 
 ;;; Code:
 
@@ -181,6 +182,9 @@ See `overleaf--message-timer'.")
 (defvar overleaf--buffer nil
   "The current overleaf buffer (used in lexical binding).")
 
+(defvar-local overleaf--user-id ""
+  "The public id of the user.")
+
 (defvar-local overleaf--buffer-before-edit-queue ""
   "The contents of the buffer before any edits were queued.")
 
@@ -224,7 +228,10 @@ recent updates.  It has elements of the form `((from-version
      :help "Toggle track-changes on overleaf"]
     ["Browse project" overleaf-browse-project
      :help "Browse project with `browse-url'"
-     :active overleaf-project-id]))
+     :active overleaf-project-id]
+    ["Goto cursor" overleaf-goto-cursor
+     :help "Jump to the cursor of another user."
+     :active overleaf-goto-cursor]))
 
 (defvar overleaf--menu-map
   (let ((map (make-sparse-keymap)))
@@ -389,6 +396,17 @@ BUFFER is the buffer value after applying the update."
                        (name (plist-get message :name)))
 
              (pcase name
+               ("clientTracking.clientUpdated"
+                (let ((args (car (plist-get message :args))))
+                  (overleaf--update-cursor
+                   (plist-get args :id)
+                   (plist-get args :name)
+                   (plist-get args :email)
+                   (plist-get args :row)
+                   (plist-get args :column))))
+               ("clientTracking.clientDisconnected"
+                (let ((id (car (plist-get message :args))))
+                  (overleaf--remove-cursor id)))
                ("connectionRejected"
                 (overleaf--warn "Connection error: %S" (plist-get message :args))
                 (overleaf-disconnect))
@@ -397,11 +415,16 @@ BUFFER is the buffer value after applying the update."
                 (overleaf--warn "Update error %S" (car (plist-get message :args)))
                 (overleaf-connect))
                ("joinProjectResponse"
+                (setq-local overleaf--user-id
+                            (plist-get
+                             (car (plist-get message :args))
+                             :publicId))
                 (websocket-send-text ws (format "5:2+::{\"name\":\"joinDoc\",\"args\":[\"%s\",{\"encodeRanges\":true}]}" overleaf-document-id)))
                ("serverPing"
                 (overleaf--debug "Received Ping -> PONG")
                 (let ((res (concat id ":::" (json-encode `(:name "clientPong" :args ,(plist-get message :args))))))
-                  (websocket-send-text ws res)))
+                  (websocket-send-text ws res))
+                (overleaf--send-position-update))
                ("otUpdateApplied"
                 (setq overleaf--receiving t)
                 (let ((last-version (plist-get (car (plist-get message :args)) :lastV))
@@ -411,7 +434,8 @@ BUFFER is the buffer value after applying the update."
                       (edits (when (plist-get message :args) (plist-get (car  (plist-get message :args)) :op))))
                   (overleaf--debug "%S Got update with version %s->%s (buffer version %s) %S" (buffer-name) last-version version overleaf--doc-version message)
                   (overleaf--apply-changes edits version last-version hash))
-                (setq overleaf--receiving nil)))
+                (setq overleaf--receiving nil)
+                (overleaf--send-position-update)))
              (overleaf--send-queued-message))))))))
 
 (defun overleaf--get-hash ()
@@ -455,6 +479,15 @@ overleaf version history."
   "Queue edit MESSAGE leading to buffer version VERSION to be send to overleaf."
   (setq overleaf--send-message-queue (nconc overleaf--send-message-queue (list message))))
 
+(defun overleaf--send-position-update ()
+  "Send a position tracking update to overleaf."
+  (with-current-buffer overleaf--buffer
+    (websocket-send-text
+     overleaf--websocket
+     (format
+      "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
+      (1- (line-number-at-pos)) (current-column) overleaf-document-id))))
+
 (defun overleaf--send-queued-message (&optional buffer)
   "Send the next message in the message queue to overleaf.
 
@@ -482,12 +515,7 @@ other edit in flight."
                        next-version
                        current-version
                        (overleaf--queued-message-hash message)))
-              (websocket-send-text
-               overleaf--websocket
-               (format
-                "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
-                (line-number-at-pos) (current-column) overleaf-document-id))
-
+              (overleaf--send-position-update)
               (setq-local overleaf--sequence-id (1+ overleaf--sequence-id))
 
               (setq-local overleaf--edit-in-flight
@@ -896,7 +924,6 @@ Mainly used to detect switchover between deletion and insertion."
   (overleaf--debug "====> adding %s to queue" edit)
   (setq overleaf--edit-queue (nconc overleaf--edit-queue (list edit))))
 
-
 (defun overleaf-queue-current-change (&optional buffer)
   "Queue the change to BUFFER currently being built."
   (let ((overleaf--buffer (or buffer overleaf--buffer)))
@@ -916,9 +943,134 @@ Mainly used to detect switchover between deletion and insertion."
           (setq-local overleaf--last-change-end -1)
           (setq-local overleaf--deletion-buffer ""))))))
 
+;;;; Cursors
+(cl-defstruct overleaf--user-data
+  "A container that holds information about a user on overleaf."
+  id
+  email
+  name
+  row
+  column
+  overlay)
+
+(defvar-local overleaf--user-positions nil
+  "A hash table relating user ids to overlays representing their cursors.")
+
+(defface overleaf--cursor-face
+  `((t (:height 1 :weigth bold :width expanded :background ,(face-attribute 'cursor :background))))
+  "The face used for fake cursors."
+  :group 'overleaf)
+
+(defcustom overleaf--colors
+  ["green" "red" "blue" "pink" "goldenrod"]
+  "The colors used to display cursors and names."
+  :type 'array
+  :group 'overleaf)
+
+(defun overleaf--id-to-color (id)
+  "Hashes the ID to get a color to use for it.
+
+Stolen from `rainbow-identifiers.el'."
+  (let* ((hash (secure-hash 'sha1 id nil nil t))
+         (len (length hash))
+         (i 0)
+         (result 0))
+    (while (< i len)
+      (setq result (+ (* result 256) (aref hash i)))
+      (setq i (1+ i)))
+    (aref overleaf--colors (mod result (length overleaf--colors)))))
+
+(defun overleaf--name-posframe-show (overlay)
+  "Show a posframe showing the name corresponding to the OVERLAY."
+  (when (and
+         overlay
+         (equal overleaf--buffer (window-buffer)))
+    (posframe-show (format "*overleaf-name-posframe %s*" overleaf-document-id)
+                   :string (overlay-get overlay 'name)
+                   :timeout 1
+                   :foreground-color "white"
+                   :buffer overleaf--buffer
+                   :background-color (overlay-get overlay 'color)
+                   :position (save-excursion
+                               (goto-char (overlay-start overlay))
+                               (point)))))
+
+
+(defun overleaf--row-col-to-pos (row column)
+  "Translate ROW and COLUMN into a char position."
+  (save-excursion
+    (goto-line (1+ row))
+    (goto-char (+ (point) column))
+    (point)))
+
+(defun overleaf--make-cursor-overlay (id name email row column)
+  (let ((color (overleaf--id-to-color id)))
+    (save-excursion
+      (goto-char (overleaf--row-col-to-pos row column))
+      (let* ((pos (point))
+             (overlay (make-overlay pos pos nil nil nil))
+             (show-name-fn (lambda (&rest _)
+                             (overleaf--name-posframe-show overlay))))
+        (overlay-put overlay 'before-string (propertize "||" 'face `(:height 1 :width expanded :background ,color)))
+        (overlay-put overlay 'id id)
+        (overlay-put overlay 'name name)
+        (overlay-put overlay 'email email)
+        (overlay-put overlay 'help-echo name)
+        (overlay-put overlay 'color color)
+        (overlay-put overlay 'modification-hooks
+                     (list show-name-fn))
+        (overlay-put overlay 'insert-in-front-hooks
+                     (list show-name-fn))
+        (overlay-put overlay 'insert-in-behind-hooks
+                     (list show-name-fn))
+
+        overlay)
+      )))
+
+(defun overleaf--update-cursor (id name email row column)
+  "Create or update a cursor overlay identified by ID.
+
+The overlay stores the ID, the NAME, the EMAIL and is displayed
+at line ROW and char COLUMN."
+  (with-current-buffer overleaf--buffer
+    (unless (equal id overleaf--user-id)
+      (let ((overlay
+             (or (gethash id overleaf--user-positions)
+                 (puthash id (overleaf--make-cursor-overlay id name email row column)
+                          overleaf--user-positions)))
+            (newpos (overleaf--row-col-to-pos row column)))
+        (move-overlay overlay newpos newpos)
+        (overleaf--name-posframe-show overlay)))))
+
+(defun overleaf--remove-cursor (id)
+  "Remove the cursor with ID."
+  (with-current-buffer overleaf--buffer
+    (delete-overlay (gethash id overleaf--user-positions))
+    (remhash id overleaf--user-positions)))
+
 ;;;; Interface
 
-;;;###autoload
+(defun overleaf-goto-cursor ()
+  "Go to the cursor position of another user."
+  (interactive)
+  (when (overleaf--connected-p)
+    (let ((choices nil))
+      (maphash
+       (lambda (id overlay)
+         (setq choices
+               (cl-pushnew (propertize (format "%s\t%s\t%s" (overlay-get overlay 'name)
+                                               (overlay-get overlay 'email)
+                                               id)
+                                       'face
+                                       `(:foreground ,(overlay-get overlay 'color)))
+                           choices)))
+       overleaf--user-positions)
+      (goto-char
+       (overlay-start
+        (gethash
+         (car (last (string-split (completing-read "User: " choices nil t) "\t")))
+         overleaf--user-positions))))))
+
 (defun overleaf-toggle-track-changes ()
   "Toggle track-changes feature change on overleaf."
   (interactive)
@@ -926,14 +1078,12 @@ Mainly used to detect switchover between deletion and insertion."
   (overleaf--write-buffer-variables)
   (overleaf--update-modeline))
 
-;;;###autoload
 (defun overleaf-toggle-auto-save ()
   "Toggle track-changes feature change on overleaf."
   (interactive)
   (setq-local overleaf-auto-save (not overleaf-auto-save))
   (overleaf--write-buffer-variables))
 
-;;;###autoload
 (defun overleaf-browse-project ()
   "Browse the current project with `browse-url'.
 `overleaf-url' and `overleaf-project-id' define the current project."
@@ -1083,8 +1233,10 @@ them in the file."
             (setq-local overleaf--edit-queue '())
             (setq-local overleaf--send-message-queue '())
             (setq-local overleaf--edit-in-flight nil)
+            (setq-local overleaf--user-positions (make-hash-table :test #'equal))
             (setq-local buffer-read-only t)
             (setq-local overleaf--doc-version -1)
+            (setq-local overleaf--user-id "")
 
             ;; magic value, don't ask me why
             (setq-local overleaf--sequence-id 2)
@@ -1113,6 +1265,10 @@ them in the file."
   (interactive)
   (when overleaf--websocket
     (overleaf--message "Disconnecting")
+    (maphash
+     (lambda (_ overlay)
+       (delete-overlay overlay))
+     overleaf--user-positions)
     (setq-local overleaf--force-close t)
     (setq-local overleaf--edit-queue '())
     (setq-local overleaf--send-message-queue '())
@@ -1190,7 +1346,8 @@ Interactively with no argument, this command toggles the mode."
    (overleaf--key "d" overleaf-disconnect)
    (overleaf--key "t" overleaf-toggle-track-changes)
    (overleaf--key "s" overleaf-toggle-auto-save)
-   (overleaf--key "b" overleaf-browse-project))
+   (overleaf--key "b" overleaf-browse-project)
+   (overleaf--key "g" overleaf-goto-cursor))
 
   (if overleaf-mode
       (overleaf--init)
