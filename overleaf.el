@@ -1014,36 +1014,29 @@ displayed at line ROW and char COLUMN."
         (let* ((pos (point))
                ;; this hack is necessary, as otherwise the font
                ;; property won't be applied
-               (face (overlay-put (make-overlay pos
-                                                (save-excursion
-                                                  (forward-char)
-                                                  (point)))
-                                  'face `(:foreground "white" :background ,color))))
-          ;; (overlay-put overlay 'face `(:foreground "white" :background ,color))
-          (let* ((overlay (seq-find
-                           (lambda (ovl)
-                             (message "%S" (overlay-get ovl 'face))
-                             (let ((ovl-face (overlay-get ovl 'face)))
-                               (cl-every #'equal ovl-face face)))
-                           (overlays-at pos)))
-                 (show-name-fn (lambda (&rest _)
-                                 (overleaf--name-posframe-show overlay))))
-            (message "%S" overlay)
-            ;; (overlay-put overlay 'id id)
-            ;; (overlay-put overlay 'priority 1000)
-            ;; (overlay-put overlay 'name name)
-            ;; (overlay-put overlay 'email email)
-            ;; (overlay-put overlay 'help-echo name)
-            ;; (overlay-put overlay 'color color)
-            ;; (overlay-put overlay 'modification-hooks
-            ;;              (list show-name-fn))
-            ;; (overlay-put overlay 'insert-in-front-hooks
-            ;;              (list show-name-fn))
-            ;; (overlay-put overlay 'insert-in-behind-hooks
-            ;;              (list show-name-fn))
-            ;; (overlay-put overlay 'face face)
+               (face `(:foreground "white" :background ,color))
+               (overlay (make-overlay pos
+                                      (save-excursion
+                                        (forward-char)
+                                        (point))))
+               (show-name-fn (lambda (&rest _)
+                               (overleaf--name-posframe-show overlay))))
+          (overlay-put overlay 'face `(:foreground "white" :background ,color))
+          (overlay-put overlay 'id id)
+          (overlay-put overlay 'priority 1000)
+          (overlay-put overlay 'name name)
+          (overlay-put overlay 'email email)
+          (overlay-put overlay 'help-echo name)
+          (overlay-put overlay 'color color)
+          (overlay-put overlay 'modification-hooks
+                       (list show-name-fn))
+          (overlay-put overlay 'insert-in-front-hooks
+                       (list show-name-fn))
+          (overlay-put overlay 'insert-in-behind-hooks
+                       (list show-name-fn))
+          (overlay-put overlay 'face face)
 
-            overlay))
+          overlay)
         ))))
 
 (defun overleaf--update-cursor (id name email row column)
@@ -1056,7 +1049,7 @@ at line ROW and char COLUMN."
       (let* ((overlay
               ;; recreating the overlay is necessary as otherwise the
               ;; face properties won't be applied
-              (progn (remhash id overleaf--user-positions)
+              (progn (overleaf--remove-cursor id)
                      (puthash id (overleaf--make-cursor-overlay id name email row column)
                               overleaf--user-positions)))
              (newpos (overleaf--row-col-to-pos row column)))
@@ -1065,9 +1058,11 @@ at line ROW and char COLUMN."
 (defun overleaf--remove-cursor (id)
   "Remove the cursor with ID."
   (with-current-buffer overleaf--buffer
-    (when-let ((overlay (gethash id overleaf--user-positions)))
+    (when-let* ((overlay (gethash id overleaf--user-positions))
+                (pos (overlay-start overlay-start)))
       (delete-overlay overlay)
-      (remhash id overleaf--user-positions))))
+      (remhash id overleaf--user-positions)
+      pos)))
 
 ;;;; Interface
 
