@@ -985,7 +985,9 @@ Stolen from `rainbow-identifiers.el'."
   "Show a posframe showing the name corresponding to the OVERLAY."
   (when (and
          overlay
-         (equal overleaf--buffer (window-buffer)))
+         (equal overleaf--buffer (window-buffer))
+         (< (window-start) (overlay-start overlay))
+         (> (window-end) (overlay-start overlay)))
     (posframe-show (format "*overleaf-name-posframe %s*" overleaf-document-id)
                    :string (overlay-get overlay 'name)
                    :timeout 1
