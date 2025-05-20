@@ -48,6 +48,13 @@
     :type 'string
     :group 'overleaf-mode))
 
+
+(defcustom overleaf-user-colors
+  ["green" "red" "blue" "pink" "goldenrod"]
+  "The colors used to display cursors and names."
+  :type 'array
+  :group 'overleaf)
+
 (defvar overleaf-cookies nil
   "The overleaf session cookies.
 
@@ -957,17 +964,6 @@ Mainly used to detect switchover between deletion and insertion."
 (defvar-local overleaf--user-positions nil
   "A hash table relating user ids to overlays representing their cursors.")
 
-(defface overleaf--cursor-face
-  `((t (:height 1 :weigth bold :width expanded :background ,(face-attribute 'cursor :background))))
-  "The face used for fake cursors."
-  :group 'overleaf)
-
-(defcustom overleaf--colors
-  ["green" "red" "blue" "pink" "goldenrod"]
-  "The colors used to display cursors and names."
-  :type 'array
-  :group 'overleaf)
-
 (defun overleaf--id-to-color (id)
   "Hashes the ID to get a color to use for it.
 
@@ -979,7 +975,7 @@ Stolen from `rainbow-identifiers.el'."
     (while (< i len)
       (setq result (+ (* result 256) (aref hash i)))
       (setq i (1+ i)))
-    (aref overleaf--colors (mod result (length overleaf--colors)))))
+    (aref overleaf-user-colors (mod result (length overleaf-user-colors)))))
 
 (defun overleaf--name-posframe-show (overlay)
   "Show a posframe showing the name corresponding to the OVERLAY."
