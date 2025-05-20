@@ -1003,6 +1003,10 @@ Stolen from `rainbow-identifiers.el'."
     (point)))
 
 (defun overleaf--make-cursor-overlay (id name email row column)
+  "Create a cursor overlay.
+
+The overlay stores the ID, the NAME, the EMAIL of the user and is
+displayed at line ROW and char COLUMN."
   (let ((color (overleaf--id-to-color id)))
     (save-excursion
       (goto-char (overleaf--row-col-to-pos row column))
