@@ -388,7 +388,8 @@ BUFFER is the buffer value after applying the update."
                  (goto-char point)
                  (setq buffer-undo-list nil))
                (overleaf--set-version version)
-               (overleaf--push-to-history version))))
+               (overleaf--push-to-history version)
+               (overleaf--write-buffer-variables))))
          (overleaf--update-modeline))
         ("5"
          (when message-raw
@@ -1045,8 +1046,9 @@ at line ROW and char COLUMN."
 (defun overleaf--remove-cursor (id)
   "Remove the cursor with ID."
   (with-current-buffer overleaf--buffer
-    (delete-overlay (gethash id overleaf--user-positions))
-    (remhash id overleaf--user-positions)))
+    (when-let ((overlay (gethash id overleaf--user-positions)))
+      (delete-overlay overlay)
+      (remhash id overleaf--user-positions))))
 
 ;;;; Interface
 
