@@ -387,16 +387,25 @@ BUFFER is the buffer value after applying the update."
                        (version (1- (string-to-number (match-string 2 message))))
                        (overleaf--is-overleaf-change t))
              (when doc
-               (let ((point (point)))
+               (let ((hash (and (not (buffer-modified-p))
+                                (buffer-hash)))
+                     (point (point)))
                  (setq-local buffer-read-only nil)
                  (erase-buffer)
                  (insert (overleaf--decode-utf8 (string-join (json-parse-string doc) "\n")))
                  (overleaf--write-buffer-variables)
                  (goto-char point)
-                 (setq buffer-undo-list nil))
-               (overleaf--set-version version)
-               (overleaf--push-to-history version)
-               (overleaf--write-buffer-variables))))
+                 (setq buffer-undo-list nil)
+                 (overleaf--set-version version)
+                 (overleaf--push-to-history version)
+                 (overleaf--write-buffer-variables)
+                 ;; Copied from `fill-paragraph':
+                 ;; If we didn't change anything in the buffer (and the buffer
+                 ;; was previously unmodified), then flip the modification status
+                 ;; back to "unchanged".
+                 (when (and hash
+                            (equal hash (buffer-hash)))
+                   (set-buffer-modified-p nil))))))
          (overleaf--update-modeline))
         ("5"
          (when message-raw
