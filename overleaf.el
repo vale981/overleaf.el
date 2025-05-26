@@ -1326,15 +1326,15 @@ to the default tooltip text."
          (cond ((= overleaf--doc-version -1)
                 (overleaf--mode-line-item (if overleaf-use-nerdfont "⟲" "...") "connecting"))
                ((zerop (length overleaf--send-message-queue))
-                (overleaf--mode-line-item (if overleaf-use-nerdfont "✓" "C") "connected\nno pending messages"))
+                (overleaf--mode-line-item (if overleaf-use-nerdfont "󰄭" "C") "connected\nno pending messages"))
                (t
                 (overleaf--mode-line-item
                  (format "%i" (length overleaf--send-message-queue))
                  "connected\nnumber of outgoing messages in the queue")))
          (if overleaf-track-changes
-             (overleaf--mode-line-item ", t" "track-changes: on")
+             (overleaf--mode-line-item " 󰑋" "track-changes: on")
            ""))
-      (overleaf--mode-line-item (if overleaf-use-nerdfont "" "X") "not connected"))
+      (overleaf--mode-line-item (if overleaf-use-nerdfont "󰌸" "X") "not connected"))
     (overleaf--mode-line-item ")")))
   (force-mode-line-update t))
 
