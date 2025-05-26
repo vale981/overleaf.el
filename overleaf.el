@@ -1068,7 +1068,7 @@ at line ROW and char COLUMN."
   "Remove the cursor with ID."
   (with-current-buffer overleaf--buffer
     (when-let* ((overlay (gethash id overleaf--user-positions))
-                (pos (overlay-start overlay-start)))
+                (pos (overlay-start overlay)))
       (delete-overlay overlay)
       (remhash id overleaf--user-positions)
       pos)))
