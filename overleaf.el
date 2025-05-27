@@ -7,7 +7,7 @@
 ;; Created: March 18, 2025
 ;; URL: https://github.com/vale981/overleaf.el
 ;; Package-Requires: ((emacs "29.4") (plz "0.9") (websocket "1.15") (webdriver "0.1") (posframe "1.4.4"))
-;; Version: 1.1.1
+;; Version: 1.1.2-pre
 ;; Keywords: hypermedia, tex, comm
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; This file is not part of GNU Emacs.
