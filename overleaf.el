@@ -566,7 +566,7 @@ no longer be possible, or will occur at a different location."
                      (setq buffer-undo-list (memq nil buffer-undo-list))
                      op)
                  (if-let* ((delete (plist-get op :d)))
-                     (when (re-search-forward (regexp-quote delete) nil)
+                     (when (re-search-forward (regexp-quote delete) nil t)
                        (replace-match "")
                        (overleaf--debug "applied delete %S %S" op `(:p ,(1- (point)) :d ,delete))
                        (setq buffer-undo-list (memq nil buffer-undo-list))
