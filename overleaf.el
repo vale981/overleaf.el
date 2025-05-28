@@ -608,9 +608,8 @@ them on top of the changes received from overleaf in the meantime."
             (when last-version
               (if (alist-get last-version overleaf--history)
                   (progn
-                    (unless (= overleaf--doc-version last-version)
-                      (overleaf--debug "%s replaying" (buffer-name))
-                      (overleaf--reset-buffer-to (alist-get last-version overleaf--history)))
+                    (overleaf--debug "%s replaying" (buffer-name))
+                    (overleaf--reset-buffer-to (alist-get last-version overleaf--history))
 
                     (dolist (change overleaf--recent-updates)
                       (when (>= (car change) last-version)
