@@ -148,5 +148,4 @@ The log message will be collected in a buffer =*overleaf-[document-id]*=.
 Feel free to open an issue providing this log.
 
 * To-do
-** TODO indicate cursors of other users
 ** TODO detect faulty document id
