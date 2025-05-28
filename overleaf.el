@@ -388,18 +388,16 @@ BUFFER is the buffer value after applying the update."
                        (overleaf--is-overleaf-change t))
              (when doc
                (let ((hash (and (not (buffer-modified-p))
-                                (buffer-hash)))
-                     (point (point)))
+                                (buffer-hash))))
                  (setq-local buffer-read-only nil)
-                 (save-excursion
-                   (erase-buffer)
-                   (insert (overleaf--decode-utf8 (string-join (json-parse-string doc) "\n"))))
-                 (overleaf--write-buffer-variables)
-                 (goto-char point)
+                 (overleaf--reset-buffer-to
+                  (overleaf--decode-utf8 (string-join (json-parse-string doc) "\n")))
+
                  (setq buffer-undo-list nil)
                  (overleaf--set-version version)
                  (overleaf--push-to-history version)
                  (overleaf--write-buffer-variables)
+
                  ;; Copied from `fill-paragraph':
                  ;; If we didn't change anything in the buffer (and the buffer
                  ;; was previously unmodified), then flip the modification status
@@ -611,10 +609,9 @@ them on top of the changes received from overleaf in the meantime."
               (if (alist-get last-version overleaf--history)
                   (progn
                     (unless (= overleaf--doc-version last-version)
-                      (save-excursion
-                        (overleaf--debug "%s replaying" (buffer-name))
-                        (erase-buffer)
-                        (insert (alist-get last-version overleaf--history))))
+                      (overleaf--debug "%s replaying" (buffer-name))
+                      (overleaf--reset-buffer-to (alist-get last-version overleaf--history)))
+
                     (dolist (change overleaf--recent-updates)
                       (when (>= (car change) last-version)
                         (overleaf--debug "~~~ ----------> %S" change)
@@ -639,9 +636,7 @@ them on top of the changes received from overleaf in the meantime."
               (let ((buffer-before-application nil))
 
                 (when (> version overleaf--doc-version)
-                  (save-excursion
-                    (erase-buffer)
-                    (insert (overleaf--queued-message-buffer-before (car overleaf--send-message-queue)))))
+                  (overleaf--reset-buffer-to (overleaf--queued-message-buffer-before (car overleaf--send-message-queue))))
 
                 (setq-local
                  overleaf--send-message-queue
@@ -661,9 +656,7 @@ them on top of the changes received from overleaf in the meantime."
                                 (setf (overleaf--queued-message-buffer change) (buffer-string))
                                 (overleaf--set-version (1+ overleaf--doc-version))
                                 change)
-                            (save-excursion
-                              (erase-buffer)
-                              (insert buffer-before-application))
+                            (overleaf--reset-buffer-to buffer-before-application)
                             nil))
                         overleaf--send-message-queue))))))
 
@@ -694,7 +687,7 @@ them on top of the changes received from overleaf in the meantime."
 (defun overleaf--write-buffer-variables ()
   "Write the current buffer-local variables to the buffer."
   (when (overleaf--connected-p)
-    (save-excursion
+    (let ((pos (point)))
       (let ((overleaf--is-overleaf-change nil)
             (track-changes overleaf-track-changes))
         (setq-local overleaf-track-changes nil)
@@ -703,7 +696,8 @@ them on top of the changes received from overleaf in the meantime."
         (add-file-local-variable 'overleaf-track-changes track-changes)
         (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
         (overleaf--flush-edit-queue (current-buffer))
-        (setq-local overleaf-track-changes track-changes)))))
+        (setq-local overleaf-track-changes track-changes)
+        (goto-char pos)))))
 
 (defun overleaf--save-buffer ()
   "Safely save the buffer."
@@ -751,6 +745,20 @@ Version: 2024-04-03"
     (setq xcount (length xcharset))
     (setq xvec (mapcar (lambda (_) (aref xcharset (random xcount))) (make-vector (if CountX CountX 5) 0)))
     (mapconcat #'char-to-string xvec)))
+
+(defun overleaf--reset-buffer-to (contents)
+  "Erase the buffer and insert CONTENTS while trying to keep the point position."
+  (let* ((pos (point))
+         (context-before (buffer-substring-no-properties (- pos 10) pos))
+         (context-after (buffer-substring-no-properties pos (+ pos 10)))
+         (context (concat context-before context-after)))
+    (erase-buffer)
+    (insert contents)
+    (goto-char pos)
+    (backward-char (1+ (length context-before)))
+    (when (search-forward context nil t)
+      (backward-char (length context-after))
+      (goto-char pos))))
 
 ;;;; Logging
 (defun overleaf--debug (format-string &rest args)
