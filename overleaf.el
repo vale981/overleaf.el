@@ -748,8 +748,8 @@ Version: 2024-04-03"
 (defun overleaf--reset-buffer-to (contents)
   "Erase the buffer and insert CONTENTS while trying to keep the point position."
   (let* ((pos (point))
-         (context-before (buffer-substring-no-properties (- pos 10) pos))
-         (context-after (buffer-substring-no-properties pos (+ pos 10)))
+         (context-before (buffer-substring-no-properties (max 0 (- pos 10)) pos))
+         (context-after (buffer-substring-no-properties pos (min (point-max) (+ pos 10))))
          (context (concat context-before context-after)))
     (erase-buffer)
     (insert contents)
