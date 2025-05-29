@@ -120,6 +120,11 @@ To be used with `overleaf-save-cookies'."
   :type 'boolean
   :group 'overleaf-mode)
 
+(defcustom overleaf-context-size 10
+  "The standard context window size used to find the correct place to re-apply an edit."
+  :type 'integer
+  :group 'overleaf-mode)
+
 (defvar-local overleaf-auto-save nil
   "Whether to auto-save the buffer each time a change is synced.")
 
@@ -745,16 +750,25 @@ Version: 2024-04-03"
     (setq xvec (mapcar (lambda (_) (aref xcharset (random xcount))) (make-vector (if CountX CountX 5) 0)))
     (mapconcat #'char-to-string xvec)))
 
-(defun overleaf--reset-buffer-to (contents)
-  "Erase the buffer and insert CONTENTS while trying to keep the point position."
-  (let* ((pos (point))
-         (context-before (buffer-substring-no-properties (max 0 (- pos 10)) pos))
+(defun overleaf--extract-context-at-point (&optional length)
+  "Return context `(before after total)' of length LENGTH around the point."
+  (let* ((length (or length overleaf-context-size))
+         (pos (point))
+         (context-before (buffer-substring-no-properties (max 1 (- pos 10)) pos))
          (context-after (buffer-substring-no-properties pos (min (point-max) (+ pos 10))))
          (context (concat context-before context-after)))
+    (overleaf--debug "using context: %S %S %S" context-before context-after context)
+    (list context-before context-after context)))
+
+(defun overleaf--reset-buffer-to (contents)
+  "Erase the buffer and insert CONTENTS while trying to keep the point position."
+  (pcase-let ((pos (point))
+              (`(,context-before ,context-after ,context) (overleaf--extract-context-at-point)))
     (erase-buffer)
     (insert contents)
     (goto-char pos)
-    (backward-char (1+ (length context-before)))
+    (when (> pos 1)
+      (backward-char (1+ (length context-before))))
     (when (search-forward context nil t)
       (backward-char (length context-after))
       (goto-char pos))))
