@@ -128,11 +128,17 @@ To be used with `overleaf-save-cookies'."
 (defvar-local overleaf-auto-save nil
   "Whether to auto-save the buffer each time a change is synced.")
 
+;;;###autoload
+(put 'overleaf-auto-save 'safe-local-variable 'booleanp)
+
 (defvar-local overleaf-project-id nil
   "The overleaf project id.
 
 When having a project opened in the browser the URL should read
 \"https://[overleaf-domain]/project/[project-id]\".")
+
+;;;###autoload
+(put 'overleaf-project-id 'safe-local-variable 'overleaf-id-p)
 
 (defvar-local overleaf-document-id nil
   "The overleaf document id as a string.
@@ -141,8 +147,14 @@ The id is most easily obtained by downloading the file that is to be
 edited from the overleaf interface.   The download URL will then be of the form
 \"https://[overleaf-domain]/project/[project-id]/doc/[document-id]\".")
 
+;;;###autoload
+(put 'overleaf-document-id 'safe-local-variable 'overleaf-id-p)
+
 (defvar-local overleaf-track-changes nil
   "Whether or not to track changes in overleaf.")
+
+;;;###autoload
+(put 'overleaf-track-changes 'safe-local-variable 'booleanp)
 
 
 (defvar-local overleaf--is-overleaf-change nil
@@ -682,6 +694,11 @@ them on top of the changes received from overleaf in the meantime."
 
 
 ;;;; Misc
+
+;;;###autoload
+(defun overleaf-id-p (id)
+  "Return t if ID is an overleaf project/document id."
+  (string-match-p "^[a-z0-9]+$" (format "%s" id)))
 
 (defun overleaf--set-version (vers)
   "Set the buffer version to VERS."
