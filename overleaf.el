@@ -452,7 +452,23 @@ BUFFER is the buffer value after applying the update."
                             (plist-get
                              (car (plist-get message :args))
                              :publicId))
-                (websocket-send-text ws (format "5:2+::{\"name\":\"joinDoc\",\"args\":[\"%s\",{\"encodeRanges\":true}]}" overleaf-document-id)))
+                (unless overleaf-document-id
+                  (unwind-protect
+                      (let* ((root
+                              (overleaf--pget
+                               (car (plist-get message :args))
+                               :project
+                               :rootFolder 0))
+                             (collection
+                              (overleaf--get-files root)))
+                        (setq-local overleaf-document-id
+                                    (overleaf--completing-read
+                                     "Select file: "
+                                     collection)))
+                    (if overleaf-document-id
+                        (websocket-send-text ws (format "5:2+::{\"name\":\"joinDoc\",\"args\":[\"%s\",{\"encodeRanges\":true}]}" overleaf-document-id))
+                      (overleaf--warn "Invalid document id %S" overleaf-document-id)
+                      (overleaf-disconnect)))))
                ("serverPing"
                 (overleaf--debug "Received Ping -> PONG")
                 (let ((res (concat id ":::" (json-encode `(:name "clientPong" :args ,(plist-get message :args))))))
@@ -470,6 +486,30 @@ BUFFER is the buffer value after applying the update."
                 (setq overleaf--receiving nil)
                 (overleaf--send-position-update)))
              (overleaf--send-queued-message))))))))
+
+
+(defun overleaf--get-files (folder &optional parent)
+  "Recursively parse overleafs FOLDER structure to list all documents.
+
+Optionally a PARENT prefix string may be provided."
+  (let* ((docs
+          (plist-get folder :docs))
+         (folders
+          (plist-get folder :folders))
+         (name (let ((tmpname (plist-get folder :name)))
+                 (if (string= tmpname "rootFolder")
+                     ""
+                   tmpname)))
+         (parent (concat (or parent "") name "/")))
+    (apply #'nconc
+           (mapcar
+            (lambda (file)
+              `(:fields (,(concat parent  (plist-get file :name))) :data ,(plist-get file :_id)))
+            docs)
+           (mapcar
+            (lambda (folder)
+              (overleaf--get-files folder parent))
+            folders))))
 
 (defun overleaf--get-hash ()
   "Get the hash of the overleaf buffer."
@@ -699,6 +739,52 @@ them on top of the changes received from overleaf in the meantime."
 (defun overleaf-id-p (id)
   "Return t if ID is an overleaf project/document id."
   (string-match-p "^[a-z0-9]+$" (format "%s" id)))
+
+(defun overleaf--pget (plist &rest keys)
+  "Recursively find KEYS in PLIST."
+  (while keys
+    (let ((key (pop keys)))
+      (if (integerp key)
+          (setq plist (nth key plist))
+        (setq plist (plist-get plist key)))))
+  plist)
+
+(defun overleaf--completing-read (prompt collection &optional padding)
+  "Perform a completing read with PROMPT.
+
+The COLLECTION contains row of the form `(:fields ([string 1] \...)
+:data [data] [optional: :propertize [arguments to propertize-string]] )'
+where the fields are displayed as columns of the table separated by
+PADDING (2 characters by default)."
+  (let* ((num-fields (1- (length (plist-get (car collection) :fields))))
+         (padding (or padding 2))
+         (field-widths
+          (mapcar
+           (lambda (field)
+             (apply #'max
+                    (mapcar
+                     (lambda (row)
+                       (length (nth field (plist-get row :fields))))
+                     collection)))
+           (number-sequence 0 num-fields)))
+         (format-string
+          (apply #'concat
+                 (mapcar (lambda (width)
+                           (format "%%-%is" (+ padding width)))
+                         field-widths)))
+         (final-collection
+          (cl-loop for row in collection
+                   collect `(,(let ((str (apply #'format format-string (plist-get row :fields))))
+                                (if-let ((args (plist-get row :propertize)))
+                                    (apply #'propertize str args)
+                                  str))
+                             ,(plist-get row :data)))))
+    (car (cdr
+          (assoc
+           (completing-read prompt
+                            final-collection
+                            nil t)
+           final-collection)))))
 
 (defun overleaf--set-version (vers)
   "Set the buffer version to VERS."
@@ -1132,17 +1218,20 @@ at line ROW and char COLUMN."
       (maphash
        (lambda (id overlay)
          (setq choices
-               (cl-pushnew (propertize (format "%s\t%s\t%s" (overlay-get overlay 'name)
-                                               (overlay-get overlay 'email)
-                                               id)
-                                       'face
-                                       `(:foreground ,(overlay-get overlay 'color)))
+               (cl-pushnew `(:fields
+                             (,(overlay-get overlay 'name)
+                              ,(overlay-get overlay 'email)
+                              ,(overlay-get overlay 'id))
+                             :data ,id
+                             :propertize
+                             (face
+                              (:foreground ,(overlay-get overlay 'color))))
                            choices)))
        overleaf--user-positions)
       (goto-char
        (overlay-start
         (gethash
-         (car (last (string-split (completing-read "User: " choices nil t) "\t")))
+         (overleaf--completing-read "User: " choices)
          overleaf--user-positions))))))
 
 (defun overleaf-toggle-track-changes ()
@@ -1165,6 +1254,8 @@ at line ROW and char COLUMN."
   (unless overleaf-project-id
     (user-error "Variable `overleaf-project-id' is not set"))
   (browse-url (format "%s/project/%s" (overleaf--url) overleaf-project-id)))
+
+
 
 ;;;###autoload
 (defun overleaf-authenticate (url)
@@ -1222,61 +1313,53 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
 
 ;;;###autoload
 (defun overleaf-find-file (url)
-  "Use selenium webdriver to connect to the project under URL.
-To use this, open a file for editing in overleaf in your browser.  Then,
-copy the url of the project and use it with this command.
+  "Choose a project and file interactively.
 
-Requires `geckodriver' (see
-https://github.com/mozilla/geckodriver/releases) to be installed."
+Optionally prompt for the overleaf server URL."
   (interactive
    (list
     (read-string "Overleaf URL: " (overleaf--url))))
 
+  (overleaf-disconnect)
   (setq-local overleaf-url url)
+  (setq-local overleaf-project-id nil)
+  (setq-local overleaf-document-id nil)
+  (let* ((cookies (overleaf--get-cookies))
+         (project-page (plz 'get (format "%s/project" (overleaf--url))
+                         :headers `(("Cookie" . ,cookies)
+                                    ("Origin" . ,(overleaf--url)))))
+         (projects (plist-get
+                    (save-match-data
+                      (string-match "name=\"ol-prefetchedProjectsBlob\".*?content=\"\\(.*?\\)\"" project-page)
+                      (json-parse-string
+                       (url-unhex-string (mm-url-decode-entities-string
+                                          (match-string 1 project-page)))
+                       :object-type 'plist :array-type 'list))
+                    :projects))
 
-  (overleaf--with-webdriver
-   (message-box "  1. Wait for the project list to load.
-  2. Select a project.
-  3. Wait for the project list to load and open a project.
-  4. Select the file you would like to edit in the file browser on the left.
+         (longest-name (apply #'max (mapcar (lambda
+                                              (project)
+                                              (length (plist-get project :name)))
+                                            projects)))
 
-This message will self-destruct in 10 seconds!
-(Just kidding...)")
-   (let ((session (make-instance 'webdriver-session)))
-     (unwind-protect
-         (progn
-           (webdriver-session-start session)
-           (webdriver-goto-url session (concat (overleaf--url) "/favicon.svg"))
-           (overleaf--webdriver-set-cookies session)
-           (webdriver-goto-url session (overleaf--url))
-
-           (overleaf--webdriver-wait-until-appears
-            (session "//div[@class='file-tree-inner']")
-            (webdriver-execute-synchronous-script session "document.evaluate(\"//div[@class='file-tree-inner']\", document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue.click()" []))
-
-           (overleaf--webdriver-wait-until-appears
-            (session "//li[@class='selected']/div" selected)
-            (setq-local overleaf-document-id
-                        (webdriver-get-element-attribute session selected "data-file-id")))
-
-           (let ((url (webdriver-get-current-url session)))
-             (save-match-data
-               (let ((match (string-match "^\\(.*\\)/project/\\([0-9a-z]+\\)$" url)))
-                 (unless match
-                   (user-error "Invalid project url"))
-                 (setq-local
-                  overleaf-url (match-string 1 url)
-                  overleaf-project-id (match-string 2 url))
-                 (overleaf-connect)))))
-       (webdriver-session-stop session)))))
+         (collection (mapcar (lambda (project)
+                               `(:fields
+                                 (,(plist-get project :name)
+                                  ,(plist-get (plist-get project :owner) :email))
+                                 :data ,(plist-get project :id)))
+                             projects)))
+    (setq-local overleaf-project-id
+                (overleaf--completing-read "Project: " collection))
+    (setq-local overleaf-document-id nil)
+    (overleaf-connect)))
 
 ;;;###autoload
 (defun overleaf-connect ()
   "Connect current buffer to overleaf.
 
 Requires `overleaf-cookies' to be set.  Prompts for the
-`overleaf-project-id' and `overleaf-document-id' and saves
-them in the file."
+`overleaf-project-id'.  The `overleaf-document-id' is prompted for
+automatically.  Both these variables will be saved to the buffer."
   (interactive)
 
   (overleaf-mode t)
@@ -1287,9 +1370,6 @@ them in the file."
           (setq-local overleaf-project-id
                       (or overleaf-project-id
                           (read-from-minibuffer "Overleaf project id: ")))
-          (setq-local overleaf-document-id
-                      (or overleaf-document-id
-                          (read-from-minibuffer "Overleaf document id: ")))
           (let* ((cookies (overleaf--get-cookies))
                  (ws-id
                   (car (string-split
