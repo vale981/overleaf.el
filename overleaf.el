@@ -42,13 +42,6 @@
 
 ;;;; Variables
 
-(eval-and-compile
-  (defcustom overleaf-keymap-prefix "C-c C-o"
-    "The prefix for dotcrafter-mode key bindings."
-    :type 'string
-    :group 'overleaf-mode))
-
-
 (defcustom overleaf-user-colors
   ["green" "red" "blue" "pink" "goldenrod"]
   "The colors used to display cursors and names."
@@ -164,8 +157,6 @@ or `overleaf-read-cookies-from-chromium' is used."
 (defvar-local overleaf-auto-save nil
   "Whether to auto-save the buffer each time a change is synced.")
 
-;;;###autoload
-(put 'overleaf-auto-save 'safe-local-variable 'booleanp)
 
 (defvar-local overleaf-project-id nil
   "The overleaf project id.
@@ -173,8 +164,7 @@ or `overleaf-read-cookies-from-chromium' is used."
 When having a project opened in the browser the URL should read
 \"https://[overleaf-domain]/project/[project-id]\".")
 
-;;;###autoload
-(put 'overleaf-project-id 'safe-local-variable 'overleaf-id-p)
+
 
 (defvar-local overleaf-document-id nil
   "The overleaf document id as a string.
@@ -183,23 +173,29 @@ The id is most easily obtained by downloading the file that is to be
 edited from the overleaf interface.   The download URL will then be of the form
 \"https://[overleaf-domain]/project/[project-id]/doc/[document-id]\".")
 
-;;;###autoload
-(put 'overleaf-document-id 'safe-local-variable 'overleaf-id-p)
+
 
 (defvar-local overleaf-track-changes nil
   "Whether or not to track changes in overleaf.")
 
-;;;###autoload
-(put 'overleaf-track-changes 'safe-local-variable 'booleanp)
 
 
 (defvar-local overleaf-url nil
   "The url of the overleaf server.")
 
-(put 'overleaf-track-changes 'safe-local-variable
-     (lambda (val)
-       (or (eq nil val)
-           (url-p val))))
+
+;;;###autoload
+(eval-and-compile
+  (defcustom overleaf-keymap-prefix "C-c C-o"
+    "The prefix for dotcrafter-mode key bindings."
+    :type 'string
+    :group 'overleaf-mode)
+  (put 'overleaf-auto-save 'safe-local-variable #'booleanp)
+  (put 'overleaf-url 'safe-local-variable #'stringp)
+  (put 'overleaf-track-changes 'safe-local-variable #'booleanp)
+  (put 'overleaf-project-id 'safe-local-variable #'overleaf-id-p)
+  (put 'overleaf-document-id 'safe-local-variable #'overleaf-id-p))
+
 
 (defvar-local overleaf--is-overleaf-change nil
   "Is set to t if the current change in the buffer comes from overleaf.
