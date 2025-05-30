@@ -196,7 +196,7 @@ See `overleaf--message-timer'.")
 (defvar-local overleaf--edit-in-flight nil
   "If non-nil, we still await the acknowledgment from overleaf.")
 
-(defvar-local overleaf--doc-version -1
+(defvar-local overleaf--doc-version -2
   "Current version of the document.")
 
 (defvar-local overleaf--sequence-id -1
@@ -341,7 +341,7 @@ BUFFER is the buffer value after applying the update."
   "Return t if the buffer is connected to overleaf."
   (and overleaf--websocket
        (websocket-openp overleaf--websocket)
-       (>= overleaf--doc-version 0)))
+       (>= overleaf--doc-version -1)))
 
 (defun overleaf--on-open (websocket)
   "Handle the open even of the web-socket WEBSOCKET."
@@ -473,6 +473,7 @@ BUFFER is the buffer value after applying the update."
                                     (overleaf--completing-read
                                      "Select file: "
                                      collection))))
+
                   (if overleaf-document-id
                       (websocket-send-text ws (format "5:2+::{\"name\":\"joinDoc\",\"args\":[\"%s\",{\"encodeRanges\":true}]}" overleaf-document-id))
                     (overleaf--warn "Invalid document id %S" overleaf-document-id)
@@ -1398,7 +1399,7 @@ automatically.  Both these variables will be saved to the buffer."
                 (setq-local overleaf--edit-in-flight nil)
                 (setq-local overleaf--user-positions (make-hash-table :test #'equal))
                 (setq-local buffer-read-only t)
-                (setq-local overleaf--doc-version -1)
+                (setq-local overleaf--doc-version -2)
                 (setq-local overleaf--user-id "")
 
                 ;; magic value, don't ask me why
