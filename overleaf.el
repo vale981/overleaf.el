@@ -95,8 +95,8 @@ To be used with `overleaf-save-cookies'."
     (with-temp-file file
       (insert cookies))))
 
-(defcustom overleaf-url "https://www.overleaf.com"
-  "The url of the overleaf server."
+(defcustom overleaf-default-url "https://www.overleaf.com"
+  "The default url of the overleaf server."
   :type 'string
   :group 'overleaf-mode)
 
@@ -156,6 +156,14 @@ edited from the overleaf interface.   The download URL will then be of the form
 ;;;###autoload
 (put 'overleaf-track-changes 'safe-local-variable 'booleanp)
 
+
+(defvar-local overleaf-url nil
+  "The url of the overleaf server.")
+
+(put 'overleaf-track-changes 'safe-local-variable
+     (lambda (val)
+       (or (eq nil val)
+           (url-p val))))
 
 (defvar-local overleaf--is-overleaf-change nil
   "Is set to t if the current change in the buffer comes from overleaf.
@@ -753,7 +761,7 @@ them on top of the changes received from overleaf in the meantime."
   "Perform a completing read with PROMPT.
 
 The COLLECTION contains row of the form `(:fields ([string 1] \...)
-:data [data] [optional: :propertize [arguments to propertize-string]] )'
+:data [data] [optional: :propertize [arguments to propeRTIZE-string]] )'
 where the fields are displayed as columns of the table separated by
 PADDING (2 characters by default)."
   (let* ((num-fields (1- (length (plist-get (car collection) :fields))))
@@ -802,6 +810,7 @@ PADDING (2 characters by default)."
         (add-file-local-variable 'overleaf-project-id overleaf-project-id)
         (add-file-local-variable 'overleaf-track-changes track-changes)
         (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
+        (add-file-local-variable 'overleaf-url overleaf-url)
         (overleaf--flush-edit-queue (current-buffer))
         (setq-local overleaf-track-changes track-changes)
         (goto-char pos)))))
@@ -829,7 +838,7 @@ If unique is t the element with key VERS will be overwritten."
 
 (defun overleaf--url ()
   "Return a sanitized version of the url without trailing slash."
-  (string-trim (string-trim overleaf-url) "" "/"))
+  (string-trim (string-trim (or overleaf-url overleaf-default-url)) "" "/"))
 
 (defun overleaf--cookie-domain ()
   "Return the domain for which the cookies will be valid.
@@ -1367,50 +1376,51 @@ automatically.  Both these variables will be saved to the buffer."
   (if overleaf-cookies
       (let ((overleaf--buffer (current-buffer)))
         (with-current-buffer overleaf--buffer
-          (setq-local overleaf-project-id
-                      (or overleaf-project-id
-                          (read-from-minibuffer "Overleaf project id: ")))
-          (let* ((cookies (overleaf--get-cookies))
-                 (ws-id
-                  (car (string-split
-                        (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" (overleaf--url) overleaf-project-id)
-                          :headers `(("Cookie" . ,cookies)
-                                     ("Origin" . ,(overleaf--url)))) ":"))))
+          (unless overleaf-url
+            (setq-local overleaf-url (read-string "Overleaf URL: " (overleaf--url))))
+          (if overleaf-project-id
+              (let* ((cookies (overleaf--get-cookies))
+                     (ws-id
+                      (car (string-split
+                            (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" (overleaf--url) overleaf-project-id)
+                              :headers `(("Cookie" . ,cookies)
+                                         ("Origin" . ,(overleaf--url)))) ":"))))
 
-            (overleaf--debug "Connecting %s %s" overleaf-project-id overleaf-document-id)
+                (overleaf--debug "Connecting %s %s" overleaf-project-id overleaf-document-id)
 
-            (setq-local overleaf--last-good-state nil)
-            (setq-local overleaf--history '())
-            (setq-local overleaf--recent-updates '())
-            (setq-local overleaf--last-change-type nil)
-            (setq-local overleaf--deletion-buffer "")
-            (setq-local overleaf--edit-queue '())
-            (setq-local overleaf--send-message-queue '())
-            (setq-local overleaf--edit-in-flight nil)
-            (setq-local overleaf--user-positions (make-hash-table :test #'equal))
-            (setq-local buffer-read-only t)
-            (setq-local overleaf--doc-version -1)
-            (setq-local overleaf--user-id "")
+                (setq-local overleaf--last-good-state nil)
+                (setq-local overleaf--history '())
+                (setq-local overleaf--recent-updates '())
+                (setq-local overleaf--last-change-type nil)
+                (setq-local overleaf--deletion-buffer "")
+                (setq-local overleaf--edit-queue '())
+                (setq-local overleaf--send-message-queue '())
+                (setq-local overleaf--edit-in-flight nil)
+                (setq-local overleaf--user-positions (make-hash-table :test #'equal))
+                (setq-local buffer-read-only t)
+                (setq-local overleaf--doc-version -1)
+                (setq-local overleaf--user-id "")
 
-            ;; magic value, don't ask me why
-            (setq-local overleaf--sequence-id 2)
+                ;; magic value, don't ask me why
+                (setq-local overleaf--sequence-id 2)
 
-            (puthash
-             (websocket-url
-              (setq-local overleaf--websocket
-                          (websocket-open
-                           (replace-regexp-in-string
-                            "https" "wss"
-                            (format "%s/socket.io/1/websocket/%s?projectId=%s&esh=1&ssp=1"
-                                    (overleaf--url) ws-id overleaf-project-id))
-                           :on-message #'overleaf--on-message
-                           :on-close #'overleaf--on-close
-                           :on-open #'overleaf--on-open
-                           :custom-header-alist `(("Cookie" . ,cookies)
-                                                  ("Origin" . ,(overleaf--url))))))
-             overleaf--buffer
-             overleaf--ws-url->buffer-table)
-            (overleaf--update-modeline))))
+                (puthash
+                 (websocket-url
+                  (setq-local overleaf--websocket
+                              (websocket-open
+                               (replace-regexp-in-string
+                                "https" "wss"
+                                (format "%s/socket.io/1/websocket/%s?projectId=%s&esh=1&ssp=1"
+                                        (overleaf--url) ws-id overleaf-project-id))
+                               :on-message #'overleaf--on-message
+                               :on-close #'overleaf--on-close
+                               :on-open #'overleaf--on-open
+                               :custom-header-alist `(("Cookie" . ,cookies)
+                                                      ("Origin" . ,(overleaf--url))))))
+                 overleaf--buffer
+                 overleaf--ws-url->buffer-table)
+                (overleaf--update-modeline))
+            (overleaf-find-file (overleaf--url)))))
     (error "Please set `overleaf-cookies'")))
 
 ;;;###autoload
