@@ -63,7 +63,7 @@ authentication cookies.
 
 For example the variable can be bound to a function that loads the
 cookies from a gpg encrypted file.  See
-`overleaf-read-cookies-from-file'.
+`overleaf-read-cookies-from-file' or `overleaf-read-cookies-from-firefox'..
 
 The cookies are most easily obtained from the developer tools in the
 browser.")
@@ -76,7 +76,35 @@ To be used with `overleaf-cookies'."
   (lambda ()
     (with-temp-buffer
       (insert-file-contents (expand-file-name file))
-      (string-trim (buffer-string)))))
+      (read (string-trim (buffer-string))))))
+
+;;;###autoload
+(defun overleaf-read-cookies-from-firefox (cookies-db)
+  "Return a cookie saving function for reading the Firefox database at COOKIES-DB.
+To be used with `overleaf-cookies'.  The database should be located at
+`~/.mozilla/firefox/[YOUR PROFILE].default/cookies.sqlite'."
+  (lambda ()
+    (setopt overleaf-cache-cookies nil)
+    (if (sqlite-available-p)
+        (let* ((cookie-copy (let ((file (make-temp-file "overleaf-cookies")))
+                              (copy-file (expand-file-name cookies-db) file t)
+                              file))
+               (db (sqlite-open cookie-copy))
+               (result
+                (mapcar
+                 (lambda (row)
+                   (pcase-let* ((`(,domain ,name ,value ,expiry) row))
+                     `(,domain
+                       ,(format "%s=%s" name value)
+                       ,expiry)))
+                 (sqlite-select
+                  db "SELECT host, name, value, expiry FROM moz_cookies WHERE name = 'overleaf_session2'"))))
+
+          (sqlite-close db)
+          (delete-file cookie-copy)
+          result)
+      (user-error "Sqlite not available!"))))
+
 
 (defvar overleaf-save-cookies (lambda (cookies)
                                 (setq overleaf-cookies cookies))
@@ -123,6 +151,14 @@ To be used with `overleaf-save-cookies'."
 (defcustom overleaf-context-size 10
   "The standard context window size used to find the correct place to re-apply an edit."
   :type 'integer
+  :group 'overleaf-mode)
+
+(defcustom overleaf-cache-cookies t
+  "Whether to cache the cookies after obtaining them.
+
+This does nothing if `overleaf-read-cookies-from-firefox'
+or `overleaf-read-cookies-from-chromium' is used."
+  :type 'boolean
   :group 'overleaf-mode)
 
 (defvar-local overleaf-auto-save nil
@@ -308,15 +344,14 @@ BUFFER is the buffer value after applying the update."
 
 (defun overleaf--get-full-cookies ()
   "Load the association list domain<->cookies."
-  (if overleaf--current-cookies
+  (if (and overleaf--current-cookies overleaf-cache-cookies)
       overleaf--current-cookies
     (condition-case err
         (setq overleaf--current-cookies
-              (read
-               (if (or (functionp overleaf-cookies)
-                       (fboundp 'overleaf-cookies))
-                   (funcall overleaf-cookies)
-                 overleaf-cookies)))
+              (if (or (functionp overleaf-cookies)
+                      (fboundp 'overleaf-cookies))
+                  (funcall overleaf-cookies)
+                overleaf-cookies))
       (error
        (overleaf--warn "Error while loading cookies: %s" (error-message-string err))
        nil))))
@@ -332,9 +367,11 @@ BUFFER is the buffer value after applying the update."
       (pcase-let ((`(,value ,validity) cookies))
         (if (or (not validity) (< now validity))
             value
+          (setq overleaf--current-cookies nil)
           (user-error "Cookies for %s are expired.  Please refresh them using `overleaf-authenticate' or manually"
                       (overleaf--cookie-domain))))
-    (user-error "Cookies for %s are not set.  Please set them using `overleaf-get-cookies' or manually"
+    (setq overleaf--current-cookies nil)
+    (user-error "Cookies for %s are not set.  Please set them using `overleaf-authenticate' or manually"
                 (overleaf--cookie-domain))))
 
 (defun overleaf--connected-p ()
@@ -380,21 +417,22 @@ BUFFER is the buffer value after applying the update."
   "Handle the closure of the websocket WS."
   (let ((overleaf--buffer
          (gethash (websocket-url ws) overleaf--ws-url->buffer-table)))
-    (with-current-buffer overleaf--buffer
-      (when overleaf--websocket
-        (overleaf--message "Websocket for document %s closed." overleaf-document-id)
-        (setq-local buffer-read-only nil)
-        (cancel-timer overleaf--message-timer)
-        (cancel-timer overleaf--flush-edit-queue-timer)
-        (remhash (websocket-url ws) overleaf--ws-url->buffer-table)
-        (setq-local overleaf--websocket nil)
-        (overleaf--update-modeline)
-        (unless overleaf--force-close
-          (with-current-buffer overleaf--buffer
-            (setq buffer-read-only t)
-            (sleep-for .1)
-            (setq overleaf--websocket nil)
-            (overleaf-connect)))))))
+    (when overleaf--buffer
+      (with-current-buffer overleaf--buffer
+        (when overleaf--websocket
+          (overleaf--message "Websocket for document %s closed." overleaf-document-id)
+          (setq-local buffer-read-only nil)
+          (cancel-timer overleaf--message-timer)
+          (cancel-timer overleaf--flush-edit-queue-timer)
+          (remhash (websocket-url ws) overleaf--ws-url->buffer-table)
+          (setq-local overleaf--websocket nil)
+          (overleaf--update-modeline)
+          (unless overleaf--force-close
+            (with-current-buffer overleaf--buffer
+              (setq buffer-read-only t)
+              (sleep-for .1)
+              (setq overleaf--websocket nil)
+              (overleaf-connect))))))))
 
 (defun overleaf--parse-message (ws message)
   "Parse a message MESSAGE from overleaf, responding by writing to WS."
@@ -845,7 +883,7 @@ If unique is t the element with key VERS will be overwritten."
   "Return the domain for which the cookies will be valid.
 The value is computed from the current value of `overleaf-url'."
   (let ((domain-parts (string-split (overleaf--url) "\\.")))
-    (string-join (last domain-parts 2) ".")))
+    (concat "." (string-join (last domain-parts 2) "."))))
 
 (defun overleaf--decode-utf8 (string)
   "Decode the weird overleaf utf8 decoding in STRING."
@@ -1381,11 +1419,28 @@ automatically.  Both these variables will be saved to the buffer."
             (setq-local overleaf-url (read-string "Overleaf URL: " (overleaf--url))))
           (if overleaf-project-id
               (let* ((cookies (overleaf--get-cookies))
+                     (response-cookie
+                      (plz 'get (format "%s/socket.io/socket.io.js" (overleaf--url) overleaf-project-id)
+                        :as 'response
+                        :headers `(("Cookie" . ,cookies)
+                                   ("Origin" . ,(overleaf--url)))))
+
+
+                     (gclb-cookie
+                      (let ((cookie (alist-get 'set-cookie (plz-response-headers response-cookie))))
+                        (save-match-data
+                          (string-match "\\(GCLB=.*?\\);" cookie)
+                          (match-string 1 cookie))))
+                     (full-cookies (format "%s; %s" cookies gclb-cookie))
+
+                     (response
+                      (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" (overleaf--url) overleaf-project-id)
+                        :as 'response
+                        :headers `(("Cookie" . ,full-cookies)
+                                   ("Origin" . ,(overleaf--url)))))
                      (ws-id
                       (car (string-split
-                            (plz 'get (format "%s/socket.io/1/?projectId=%s&esh=1&ssp=1" (overleaf--url) overleaf-project-id)
-                              :headers `(("Cookie" . ,cookies)
-                                         ("Origin" . ,(overleaf--url)))) ":"))))
+                            (plz-response-body response) ":"))))
 
                 (overleaf--debug "Connecting %s %s" overleaf-project-id overleaf-document-id)
 
@@ -1416,7 +1471,7 @@ automatically.  Both these variables will be saved to the buffer."
                                :on-message #'overleaf--on-message
                                :on-close #'overleaf--on-close
                                :on-open #'overleaf--on-open
-                               :custom-header-alist `(("Cookie" . ,cookies)
+                               :custom-header-alist `(("Cookie" . ,full-cookies)
                                                       ("Origin" . ,(overleaf--url))))))
                  overleaf--buffer
                  overleaf--ws-url->buffer-table)

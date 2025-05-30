@@ -33,15 +33,21 @@ load path and ~(require 'overleaf)~. You can also use
       (setq overleaf-save-cookies
             (overleaf-save-cookies-to-file cookie-file))
       (setq overleaf-cookies
-            (overleaf-read-cookies-from-file cookie-file))))
+            (overleaf-read-cookies-from-file cookie-file)))
+
+    ;; Example: load cookies from firefox
+    (setq overleaf-cookies
+          (overleaf-read-cookies-from-firefox "~/.mozilla/firefox/[YOUR PROFILE].default/cookies.sqlite")))
 #+end_src
 
 * Setting Up
 ** Getting the Session Cookies
 First, there are the session cookies which can be obtained either
-through executing the command ~M-x overleaf-authenticate~ or through the
-developer tools in your favorite browser.
+through executing the command ~M-x overleaf-authenticate~, reading the
+Firefox cookie database or through the developer tools in your
+favorite browser.
 
+*** ~overleaf-authenticate~
 For the former option the [[https://github.com/mozilla/geckodriver][Mozilla gecko driver]] must be installed and
 the variable ~overleaf-save-cookies~ must be set to a function that
 receives a string containing the cookies and saving it either directly
@@ -58,25 +64,34 @@ file:
             (overleaf-read-cookies-from-file cookie-file)))
 #+end_src
 
+**** Firefox
+Locate you Firefox profile folder and set:
+#+begin_src emacs-lisp
+  (setq overleaf-cookies
+            (overleaf-read-cookies-from-firefox "~/.mozilla/firefox/[YOUR PROFILE].default/cookies.sqlite"))
+#+end_src
+This assumes that you're logged into overleaf in this Firefox profile.
 
+**** Manual
 If the above doesn't work for you, simply open the overleaf document
 you want to edit and enable network monitoring. Select any request
 made to the overleaf domain and get the contents of the =Cookie= request
 header. It should have contents like:
 #+begin_src text
-  overleaf_session2=[redacted]; __stripe_mid=[redacted]; GCLB=[redacted]; __stripe_sid=redacted
+  overleaf_session2=[redacted]
 #+end_src
 
 Then set ~overleaf-cookies~ to the cookies string
 #+begin_src elisp
   (setq overleaf-cookies
-        "((\"[overleaf domail (ovelerleaf.com)]\" \"overleaf_session2=[redacted]; __stripe_mid=[redacted]; GCLB=[redacted]; __stripe_sid=redacted\" [expiry time or nil]))")
+        (("[overleaf domain (ovelerleaf.com)]" "overleaf_session2=[session]" [expiry unix time])))
 #+end_src
 or store the cookies by any means you'd like (see above) and set
 ~overleaf-cookies~ to a function that returns the cookie string. The
 cookie domain should only contain the part just before the TLD and the
 TLD. For example =www.overleaf.com= becomes =overleaf.com= (I don't make
 the rules...).
+
 
 * Usage
 If the cookies are set, calling ~overleaf-connect~ will prompt you for a
