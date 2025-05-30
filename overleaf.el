@@ -460,8 +460,8 @@ BUFFER is the buffer value after applying the update."
                             (plist-get
                              (car (plist-get message :args))
                              :publicId))
-                (unless overleaf-document-id
-                  (unwind-protect
+                (unwind-protect
+                    (unless overleaf-document-id
                       (let* ((root
                               (overleaf--pget
                                (car (plist-get message :args))
@@ -472,11 +472,11 @@ BUFFER is the buffer value after applying the update."
                         (setq-local overleaf-document-id
                                     (overleaf--completing-read
                                      "Select file: "
-                                     collection)))
-                    (if overleaf-document-id
-                        (websocket-send-text ws (format "5:2+::{\"name\":\"joinDoc\",\"args\":[\"%s\",{\"encodeRanges\":true}]}" overleaf-document-id))
-                      (overleaf--warn "Invalid document id %S" overleaf-document-id)
-                      (overleaf-disconnect)))))
+                                     collection))))
+                  (if overleaf-document-id
+                      (websocket-send-text ws (format "5:2+::{\"name\":\"joinDoc\",\"args\":[\"%s\",{\"encodeRanges\":true}]}" overleaf-document-id))
+                    (overleaf--warn "Invalid document id %S" overleaf-document-id)
+                    (overleaf-disconnect))))
                ("serverPing"
                 (overleaf--debug "Received Ping -> PONG")
                 (let ((res (concat id ":::" (json-encode `(:name "clientPong" :args ,(plist-get message :args))))))
