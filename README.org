@@ -144,5 +144,11 @@ The log message will be collected in a buffer =*overleaf-[document-id]*=.
 
 Feel free to open an issue providing this log.
 
+* Alternatives
+- [[https://github.com/fregante/GhostText][GhostText]] works pretty well in conjunction with [[https://github.com/alpha22jp/atomic-chrome][Atomic Chrome]]
+
+  Had I realized this solution existed, I probably wouln't have started this project. However, the solution here is still useful and provides some functionality on top (like jumping to other peoples cursors).
+
+
 * To-do
 ** TODO detect faulty document id
