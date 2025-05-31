@@ -91,7 +91,7 @@ To be used with `overleaf-cookies'.  The database should be located at
                        ,(format "%s=%s" name value)
                        ,expiry)))
                  (sqlite-select
-                  db "SELECT host, name, value, expiry FROM moz_cookies WHERE name = 'overleaf_session2'"))))
+                  db "SELECT host, name, value, expiry FROM moz_cookies WHERE name = 'overleaf_session2' OR name = 'overleaf.sid'"))))
 
           (sqlite-close db)
           (delete-file cookie-copy)
@@ -356,9 +356,11 @@ BUFFER is the buffer value after applying the update."
   "Load the cookies from `overleaf-cookies'."
   (if-let
       ((cookies
-        (alist-get (overleaf--cookie-domain)
-                   (overleaf--get-full-cookies)
-                   nil nil #'string=))
+        (cl-some (lambda (prefix)
+                   (alist-get (overleaf--cookie-domain)
+                              (overleaf--get-full-cookies)
+                              nil nil #'string=))
+                 '("." "")))
        (now (time-convert nil 'integer))) ; Current unix time in seconds.
       (pcase-let ((`(,value ,validity) cookies))
         (if (or (not validity) (< now validity))
@@ -878,8 +880,8 @@ If unique is t the element with key VERS will be overwritten."
 (defun overleaf--cookie-domain ()
   "Return the domain for which the cookies will be valid.
 The value is computed from the current value of `overleaf-url'."
-  (let ((domain-parts (string-split (overleaf--url) "\\.")))
-    (concat "." (string-join (last domain-parts 2) "."))))
+  (let ((domain-parts (string-split (replace-regexp-in-string ".*?://" "" (overleaf--url)) "\\.")))
+    (string-join (last domain-parts 2) ".")))
 
 (defun overleaf--decode-utf8 (string)
   "Decode the weird overleaf utf8 decoding in STRING."
@@ -1422,11 +1424,12 @@ automatically.  Both these variables will be saved to the buffer."
                                    ("Origin" . ,(overleaf--url)))))
 
 
+                     ;; this only seems to be necessary on the overleaf.com instance
                      (gclb-cookie
                       (let ((cookie (alist-get 'set-cookie (plz-response-headers response-cookie))))
-                        (save-match-data
-                          (string-match "\\(GCLB=.*?\\);" cookie)
-                          (match-string 1 cookie))))
+                        (when cookie (save-match-data
+                                       (string-match "\\(GCLB=.*?\\);" cookie)
+                                       (match-string 1 cookie)))))
                      (full-cookies (format "%s; %s" cookies gclb-cookie))
 
                      (response
@@ -1461,9 +1464,11 @@ automatically.  Both these variables will be saved to the buffer."
                   (setq-local overleaf--websocket
                               (websocket-open
                                (replace-regexp-in-string
-                                "https" "wss"
-                                (format "%s/socket.io/1/websocket/%s?projectId=%s&esh=1&ssp=1"
-                                        (overleaf--url) ws-id overleaf-project-id))
+                                "http" "ws"
+                                (replace-regexp-in-string
+                                 "https" "wss"
+                                 (format "%s/socket.io/1/websocket/%s?projectId=%s&esh=1&ssp=1"
+                                         (overleaf--url) ws-id overleaf-project-id)))
                                :on-message #'overleaf--on-message
                                :on-close #'overleaf--on-close
                                :on-open #'overleaf--on-open

@@ -17,3 +17,5 @@ auto
 activate
 data
 .projectile*
+
+/overleaf-server
