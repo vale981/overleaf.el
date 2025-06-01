@@ -730,6 +730,16 @@ is provided use the context to fine tune where the edit is applied."
                    )))
              edits)))))
 
+(defun overleaf--verify-buffer (hash)
+  "Verify that the current buffer has the hash HASH.
+Re-connect if this is not the case."
+  (when (and hash
+             (not (string= (overleaf--get-hash) hash)))
+    (overleaf--warn "Hash mismatch... reconnecting")
+    (setq-local buffer-read-only t)
+    (setq-local overleaf--send-message-queue nil)
+    (overleaf-disconnect)))
+
 (cl-defun overleaf--apply-changes (edits version last-version hash)
   "Apply change EDITS  from version LAST-VERSION to VERSION to have the hash HASH.
 
@@ -739,6 +749,7 @@ them on top of the changes received from overleaf in the meantime."
   (with-current-buffer overleaf--buffer
     (overleaf--debug "VERSION: %S -> %S %S" last-version version edits)
     (overleaf--flush-edit-queue overleaf--buffer)
+
     (let ((overleaf--is-overleaf-change t))
       (if (and overleaf--edit-in-flight (not edits))
           (progn
@@ -764,76 +775,55 @@ them on top of the changes received from overleaf in the meantime."
         (overleaf--push-to-recent-updates
          (make-overleaf--update :from-version (or last-version (1- version)) :to-version version :edits edits :hash hash)))
 
-      (when-let ((last-version (or last-version (and edits (1- version)))))
-        (if (or overleaf--edit-in-flight overleaf--send-message-queue)
-            (progn
-              (if (alist-get last-version overleaf--history)
+      (when (edits)
+        ;; FIXME: does this ever actually HAPPEN?
+        (if overleaf--edit-in-flight
+            (overleaf--reset-buffer-to (overleaf--queued-message-buffer-before overleaf--edit-in-flight))
+          (when overleaf--send-message-queue
+            (overleaf--reset-buffer-to (overleaf--queued-message-buffer-before (car overleaf--send-message-queue)))))
+
+        (overleaf--apply-changes-internal edits)
+        (overleaf--set-version version)
+        (when hash (overleaf--verify-buffer hash))
+        (overleaf--push-to-history version)
+
+        (when overleaf--edit-in-flight
+          (overleaf--warn "An update was in flight while we received another update from the server.")
+          (setf (overleaf--queued-message-doc-version overleaf--edit-in-flight) (1+ version))
+          (overleaf--debug "----------> %S" overleaf--edit-in-flight)
+          (setf (overleaf--update-from-version overleaf--edit-in-flight) overleaf--doc-version)
+
+          (if (overleaf--apply-changes-internal (overleaf--update-edits overleaf--edit-in-flight))
+              (progn
+                (setf (overleaf--update-buffer overleaf--edit-in-flight) (buffer-string))
+                (overleaf--set-version (1+ overleaf--doc-version)))
+            (overleaf--debug "failed to apply")
+            (setq-local overleaf--edit-in-flight nil)))
+
+        (when overleaf--send-message-queue
+          (let ((buffer-before-application nil)
+                (new-edit-queue nil))
+            (cl-dolist (change overleaf--send-message-queue)
+              (overleaf--debug "->>>>>>>>>>>>>>>>>>>>>>>>>>>> (%S) (%S) %S" overleaf--doc-version version (overleaf--queued-message-edits change))
+              (setq buffer-before-application (buffer-string))
+              (if-let* ((edits
+                         (overleaf--apply-changes-internal
+                          (overleaf--queued-message-edits change)
+                          (overleaf--queued-message-context change))))
                   (progn
-                    (overleaf--debug "%S replaying %S %S" (buffer-name) version overleaf--edit-in-flight)
-                    (overleaf--reset-buffer-to (alist-get last-version overleaf--history))
-                    (overleaf--set-version last-version)
+                    (setf (overleaf--queued-message-doc-version change) overleaf--doc-version)
+                    (setf (overleaf--queued-message-hash change) (overleaf--get-hash))
+                    (setf (overleaf--queued-message-edits change) edits)
+                    (setf (overleaf--queued-message-buffer-before change) buffer-before-application)
+                    (setf (overleaf--queued-message-buffer change) (buffer-string))
+                    (setq new-edit-queue (nconc new-edit-queue (list change)))
+                    (overleaf--set-version (1+ overleaf--doc-version))
+                    (overleaf--debug "%S" (buffer-string)))
+                (overleaf--reset-buffer-to buffer-before-application)
+                (setq overleaf--send-message-queue nil)))
 
-                    (dolist (change overleaf--recent-updates)
-                      (overleaf--debug "know: %S, %S->%S"  overleaf--doc-version (nth 0 change) (nth 1 change))
-                      (when (and  ;; (>= (car (cdr change)) overleaf--doc-version)
-                             (> (car change) last-version))
-                        (overleaf--debug "~~~ ----------> %S" change)
-                        (overleaf--set-version (car change))
-                        (overleaf--apply-changes-internal (overleaf--update-edits (cdr (cdr change))))))
-
-                    (overleaf--set-version version)
-                    (when (and hash
-                               (not (string= (overleaf--get-hash) hash)))
-                      (overleaf--warn "Hash mismatch... reconnecting")
-                      (setq-local buffer-read-only t)
-                      (setq-local overleaf--send-message-queue nil)
-                      (overleaf-disconnect))
-                    (overleaf--push-to-history version)
-
-                    (when overleaf--edit-in-flight
-                      (overleaf--debug "----------> %S" overleaf--edit-in-flight)
-                      (setf (overleaf--update-from-version overleaf--edit-in-flight) overleaf--doc-version)
-                      (if (overleaf--apply-changes-internal (overleaf--update-edits overleaf--edit-in-flight))
-                          (progn
-                            (setf (overleaf--update-buffer overleaf--edit-in-flight) (buffer-string))
-                            (overleaf--set-version (1+ overleaf--doc-version)))
-                        (overleaf--debug "failed to apply")
-                        (setq-local overleaf--edit-in-flight nil))))
-
-                (overleaf--warn "We haven't seen document version %S yet. Reconnecting" last-version)
-                (overleaf-connect))
-
-
-              (when overleaf--send-message-queue
-                (let ((buffer-before-application nil)
-                      (new-edit-queue nil))
-
-                  (overleaf--set-version version)
-                  (cl-dolist (change overleaf--send-message-queue)
-                    (overleaf--debug "->>>>>>>>>>>>>>>>>>>>>>>>>>>> (%S) (%S) %S" overleaf--doc-version version (overleaf--queued-message-edits change))
-                    (setq buffer-before-application (buffer-string))
-                    (if-let* ((edits
-                               (overleaf--apply-changes-internal
-                                (overleaf--queued-message-edits change)
-                                (overleaf--queued-message-context change))))
-                        (progn
-                          (setf (overleaf--queued-message-doc-version change) overleaf--doc-version)
-                          (setf (overleaf--queued-message-hash change) (overleaf--get-hash))
-                          (setf (overleaf--queued-message-edits change) edits)
-                          (setf (overleaf--queued-message-buffer-before change) buffer-before-application)
-                          (setf (overleaf--queued-message-buffer change) (buffer-string))
-                          (setq new-edit-queue (nconc new-edit-queue (list change)))
-                          (overleaf--set-version (1+ overleaf--doc-version))
-                          (overleaf--debug "%S" (buffer-string)))
-                      (overleaf--reset-buffer-to buffer-before-application)
-                      (setq overleaf--send-message-queue nil)))
-
-                  (setq overleaf--send-message-queue new-edit-queue))))
-          (overleaf--apply-changes-internal edits)
-          (overleaf--set-version version)
-          (overleaf--push-to-history version)))
+            (setq overleaf--send-message-queue new-edit-queue))))
       (overleaf--update-modeline))))
-
 
 ;;;; Misc
 
