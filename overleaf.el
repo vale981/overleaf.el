@@ -671,16 +671,16 @@ is provided use the context to fine tune where the edit is applied."
                        (pcase-let ((orig-pos (1+ (plist-get (car edits) :p)))
                                    (`(,context-before ,context-after ,context) context))
                          (goto-char orig-pos)
-                         (ignore-error (backward-char (length context-before)))
+                         (ignore-errors (backward-char (length context-before)))
                          (if (search-forward context nil t)
                              (progn
-                               (ignore-error (backward-char (length context-after)))
+                               (ignore-errors (backward-char (length context-after)))
                                (- (point) orig-pos))
                            (goto-char orig-pos)
-                           (ignore-error (forward-char (length context-after)))
+                           (ignore-errors (forward-char (length context-after)))
                            (if (search-backward context nil t)
                                (progn
-                                 (ignore-error (forward-char (length context-before)))
+                                 (ignore-errors (forward-char (length context-before)))
                                  (- (point) orig-pos))
                              nil)))
                      0)))
@@ -764,7 +764,7 @@ them on top of the changes received from overleaf in the meantime."
         (overleaf--push-to-recent-updates
          (make-overleaf--update :from-version (or last-version (1- version)) :to-version version :edits edits :hash hash)))
 
-      (when (edits)
+      (when edits
         ;; FIXME: does this ever actually HAPPEN?
         (if overleaf--edit-in-flight
             (overleaf--reset-buffer-to (overleaf--queued-message-buffer-before overleaf--edit-in-flight))
@@ -953,11 +953,11 @@ Version: 2024-04-03"
     (insert contents)
     (goto-char pos)
     (when (> pos 1)
-      (ignore-error (backward-char (1+ (length context-before)))))
+      (ignore-errors (backward-char (1+ (length context-before)))))
     (if (search-forward context nil t)
-        (ignore-error (backward-char (length context-after)))
+        (ignore-errors (backward-char (length context-after)))
       (if (search-backward context nil t)
-          (ignore-error (forward-char (length context-before)))
+          (ignore-errors (forward-char (length context-before)))
         (goto-char pos)))))
 
 ;;;; Logging
@@ -1246,9 +1246,14 @@ Stolen from `rainbow-identifiers.el'."
 (defun overleaf--row-col-to-pos (row column)
   "Translate ROW and COLUMN into a char position."
   (save-excursion
-    (goto-line (1+ row))
-    (goto-char (+ (point) column))
-    (point)))
+    (let ((row (1+ row)))
+      (if (> row (count-lines (point-min) (point-max)))
+          nil
+        (goto-line row)
+        (let ((pos (+ (point) column)))
+          (if (> pos (point-max))
+              nil
+            pos))))))
 
 (defun overleaf--make-cursor-overlay (id name email row column)
   "Create a cursor overlay.
@@ -1256,17 +1261,14 @@ Stolen from `rainbow-identifiers.el'."
 The overlay stores the ID, the NAME, the EMAIL of the user and is
 displayed at line ROW and char COLUMN."
   (with-current-buffer overleaf--buffer
-    (let ((color (overleaf--id-to-color id)))
+    (when-let ((color (overleaf--id-to-color id))
+               (pos (overleaf--row-col-to-pos row column)))
       (save-excursion
-        (goto-char (overleaf--row-col-to-pos row column))
-        (let* ((pos (point))
-               ;; this hack is necessary, as otherwise the font
+        (goto-char pos)
+        (let* (;; this hack is necessary, as otherwise the font
                ;; property won't be applied
                (face `(:foreground "white" :background ,color))
-               (overlay (make-overlay pos
-                                      (save-excursion
-                                        (forward-char)
-                                        (point))))
+               (overlay (make-overlay pos (1+ pos)))
                (show-name-fn (lambda (&rest _)
                                (overleaf--name-posframe-show overlay))))
           (overlay-put overlay 'face `(:foreground "white" :background ,color))
@@ -1284,8 +1286,7 @@ displayed at line ROW and char COLUMN."
                        (list show-name-fn))
           (overlay-put overlay 'face face)
 
-          overlay)
-        ))))
+          overlay)))))
 
 (defun overleaf--update-cursor (id name email row column)
   "Create or update a cursor overlay identified by ID.
@@ -1294,13 +1295,14 @@ The overlay stores the ID, the NAME, the EMAIL and is displayed
 at line ROW and char COLUMN."
   (with-current-buffer overleaf--buffer
     (unless (equal id overleaf--user-id)
-      (let* ((overlay
-              ;; recreating the overlay is necessary as otherwise the
-              ;; face properties won't be applied
-              (progn (overleaf--remove-cursor id)
-                     (puthash id (overleaf--make-cursor-overlay id name email row column)
-                              overleaf--user-positions)))
-             (newpos (overleaf--row-col-to-pos row column)))
+      (when-let* ((overlay
+                   ;; recreating the overlay is necessary as otherwise the
+                   ;; face properties won't be applied
+                   (progn (overleaf--remove-cursor id)
+                          (when-let ((overlay (overleaf--make-cursor-overlay id name email row column)))
+                            (puthash id overlay
+                                     overleaf--user-positions))))
+                  (newpos (overleaf--row-col-to-pos row column)))
         (overleaf--name-posframe-show overlay)))))
 
 (defun overleaf--remove-cursor (id)
