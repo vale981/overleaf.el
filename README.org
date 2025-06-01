@@ -152,3 +152,6 @@ Feel free to open an issue providing this log.
 
 * To-do
 ** TODO detect faulty document id
+**
+
+** TODO fix cursor overlay if end of buffer
