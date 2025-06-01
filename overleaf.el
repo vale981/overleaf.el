@@ -131,11 +131,6 @@ To be used with `overleaf-save-cookies'."
   :type 'float
   :group 'overleaf-mode)
 
-(defcustom overleaf-message-cooldown 1.0
-  "The interval of time in seconds to wait before after receiving."
-  :type 'float
-  :group 'overleaf-mode)
-
 (defcustom overleaf-debug nil
   "Whether to log debug messages."
   :type 'boolean
@@ -543,15 +538,9 @@ BUFFER is the buffer value after applying the update."
                   (overleaf--apply-changes edits version last-version hash)
                   (setq-local overleaf--receiving nil)
                   (overleaf--send-position-update)
-                  (if last-version
-                      (run-with-timer overleaf-message-cooldown nil
-                                      (lambda (buff)
-                                        (with-current-buffer buff
-                                          (let ((overleaf--buffer buff))
-                                            (overleaf--make-message-timer))))
-                                      overleaf--buffer)
-                    (with-current-buffer overleaf--buffer
-                      (overleaf--make-message-timer)))))))))))))
+                  (with-current-buffer overleaf--buffer
+                    (overleaf--send-queued-message)
+                    (overleaf--make-message-timer))))))))))))
 
 
 (defun overleaf--get-files (folder &optional parent)
