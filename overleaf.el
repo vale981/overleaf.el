@@ -194,7 +194,9 @@ edited from the overleaf interface.   The download URL will then be of the form
   (put 'overleaf-url 'safe-local-variable #'stringp)
   (put 'overleaf-track-changes 'safe-local-variable #'booleanp)
   (put 'overleaf-project-id 'safe-local-variable #'overleaf-id-p)
-  (put 'overleaf-document-id 'safe-local-variable #'overleaf-id-p))
+  (put 'overleaf-document-id 'safe-local-variable #'overleaf-id-p)
+  ;; Do not ignore :propertize forms.  See variable `mode-line-format'.
+  (put 'overleaf--mode-line 'risky-local-variable t))
 
 
 (defvar-local overleaf--is-overleaf-change nil
@@ -236,9 +238,6 @@ See `overleaf--message-timer'.")
 
 (defvar-local overleaf--mode-line ""
   "Contents of the mode-line indicator.")
-
-;; Do not ignore :propertize forms.  See variable `mode-line-format'.
-(put 'overleaf--mode-line 'risky-local-variable t)
 
 (defvar overleaf--ws-url->buffer-table (make-hash-table :test #'equal)
   "A hash table associating web-sockets to buffers.")
