@@ -262,13 +262,6 @@ Should only contain known-good states.  Is limited to length
 (defvar-local overleaf-history-buffer-length 50
   "How many past versions of the buffer to keep in memory.")
 
-(defvar-local overleaf--recent-updates nil
-  "An alist of recent updates received from overleaf.
-
-An alist that contains the `overleaf-update-buffer-length'
-recent updates.  It has elements of the form `((from-version
-. (to-version . update)) ...)'.")
-
 (defvar-local overleaf-update-buffer-length 50
   "How many past updates of the buffer to keep in memory.")
 
@@ -589,20 +582,6 @@ overleaf version history."
       (when overleaf-auto-save
         (save-buffer)))))
 
-(defun overleaf--push-to-recent-updates (update)
-  "Splice the UPDATE of type `overleaf--update' into `overleaf--recent-updates'."
-  (let ((from-version (overleaf--update-from-version update))
-        (to-version (overleaf--update-to-version update)))
-    (when (and from-version to-version overleaf--buffer)
-      (with-current-buffer overleaf--buffer
-        (setq-local overleaf--recent-updates
-                    (overleaf--splice-into
-                     overleaf--recent-updates to-version (cons from-version update)
-                     t))
-        (setq-local overleaf--recent-updates
-                    (overleaf--truncate
-                     overleaf--recent-updates overleaf-update-buffer-length))))))
-
 (defun overleaf--queue-message (message)
   "Queue edit MESSAGE leading to buffer version VERSION to be send to overleaf."
   (setq overleaf--send-message-queue (nconc overleaf--send-message-queue (list message))))
@@ -743,8 +722,6 @@ them on top of the changes received from overleaf in the meantime."
           (progn
             (overleaf--debug "%S BINGO, we've been waiting for this. %S %S" (buffer-name) (overleaf--update-to-version overleaf--edit-in-flight) version)
             (setf (overleaf--update-to-version overleaf--edit-in-flight) version)
-            (overleaf--push-to-recent-updates
-             overleaf--edit-in-flight)
             (overleaf--push-to-history
              version
              (when overleaf--send-message-queue
@@ -758,10 +735,7 @@ them on top of the changes received from overleaf in the meantime."
                   (overleaf--debug "%S %S" version overleaf--doc-version)
                   (setf (overleaf--queued-message-doc-version message) overleaf--doc-version)
                   (overleaf--set-version (1+ overleaf--doc-version)))))
-            (setq overleaf--edit-in-flight nil))
-
-        (overleaf--push-to-recent-updates
-         (make-overleaf--update :from-version (or last-version (1- version)) :to-version version :edits edits :hash hash)))
+            (setq overleaf--edit-in-flight nil)))
 
       (when edits
         ;; FIXME: does this ever actually HAPPEN?
@@ -1504,7 +1478,6 @@ automatically.  Both these variables will be saved to the buffer."
 
                 (setq-local overleaf--last-good-state nil)
                 (setq-local overleaf--history '())
-                (setq-local overleaf--recent-updates '())
                 (setq-local overleaf--last-change-type nil)
                 (setq-local overleaf--deletion-buffer "")
                 (setq-local overleaf--edit-queue '())
