@@ -72,16 +72,49 @@ To be used with `overleaf-cookies'."
       (read (string-trim (buffer-string))))))
 
 ;;;###autoload
-(defun overleaf-read-cookies-from-firefox (cookies-db)
-  "Return a cookie saving function for reading the Firefox database at COOKIES-DB.
-To be used with `overleaf-cookies'.  The database should be located at
-`~/.mozilla/firefox/[YOUR PROFILE].default/cookies.sqlite'."
+(cl-defun overleaf-read-cookies-from-firefox (&key (firefox-folder "~/.mozilla/firefox/") (profile nil))
+  "Make a cookie saving function reading the database at FIREFOX-FOLDER.
+
+To be used with `overleaf-cookies'.  The Firefox folder should be located at `~/.mozilla/firefox/'.  If PROFILE is provided, choose this profile.  Otherwise prompt."
   (lambda ()
     (setopt overleaf-cache-cookies nil)
     (if (sqlite-available-p)
-        (let* ((cookie-copy (let ((file (make-temp-file "overleaf-cookies")))
-                              (copy-file (expand-file-name cookies-db) file t)
-                              file))
+        (let* ((start-pos 0)
+               (profile-blocks
+                (with-temp-buffer
+                  (insert-file-contents (expand-file-name (concat firefox-folder "/profiles.ini")))
+                  (goto-char (point-min))
+                  (let ((matches))
+                    (while (re-search-forward "\\[.*\\]\\(\\(?:.\\|\n\\)+?\\)\\[" (point-max) t)
+                      (backward-char)
+                      (push (match-string 1) matches))
+                    matches)))
+
+               (profiles
+                (remq 'nil
+                      (mapcar (lambda (block)
+                                (save-match-data
+                                  (when-let
+                                      ((path (progn (string-match "^Path=\\(.*?\\)$" block)
+                                                    (match-string 1 block)))
+                                       (name (progn (string-match "^Name=\\(.*?\\)$" block)
+                                                    (match-string 1 block))))
+                                    `(:fields (,name) :data ,path))))
+                              profile-blocks)))
+
+
+               (profile (if profile
+                            (plist-get
+                             (seq-find
+                              (lambda (row)
+                                (string= (car (plist-get row :fields)) profile))
+                              profiles)
+                             :data)
+                          (overleaf--completing-read "Profile: " profiles)))
+               (cookie-copy
+                (let ((file (make-temp-file "overleaf-cookies")))
+                  (copy-file (expand-file-name (concat firefox-folder "/" profile "/cookies.sqlite")) file t)
+                  file))
                (db (sqlite-open cookie-copy))
                (result
                 (mapcar

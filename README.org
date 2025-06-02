@@ -68,9 +68,12 @@ file:
 Locate you Firefox profile folder and set:
 #+begin_src emacs-lisp
   (setq overleaf-cookies
-            (overleaf-read-cookies-from-firefox "~/.mozilla/firefox/[YOUR PROFILE].default/cookies.sqlite"))
+            (overleaf-read-cookies-from-firefox [optional: :profile "<profile>"]  ))
 #+end_src
 This assumes that you're logged into overleaf in this Firefox profile.
+
+*It is recommended that no Firefox instance using this profile is running while
+=overleaf.el= is accessing the cookie database. The cookies usually tend to be evicted from the database while Firefox is running and will only be put back upon closure.*
 
 **** Manual
 If the above doesn't work for you, simply open the overleaf document
