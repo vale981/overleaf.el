@@ -75,7 +75,9 @@ To be used with `overleaf-cookies'."
 (cl-defun overleaf-read-cookies-from-firefox (&key (firefox-folder "~/.mozilla/firefox/") (profile nil))
   "Make a cookie saving function reading the database at FIREFOX-FOLDER.
 
-To be used with `overleaf-cookies'.  The Firefox folder should be located at `~/.mozilla/firefox/'.  If PROFILE is provided, choose this profile.  Otherwise prompt."
+To be used with `overleaf-cookies'.  The Firefox folder should be
+located at `~/.mozilla/firefox/'.  If PROFILE is provided, choose this
+profile.  Otherwise prompt."
   (lambda ()
     (setopt overleaf-cache-cookies nil)
     (if (sqlite-available-p)
@@ -102,7 +104,6 @@ To be used with `overleaf-cookies'.  The Firefox folder should be located at `~/
                                     `(:fields (,name) :data ,path))))
                               profile-blocks)))
 
-
                (profile (if profile
                             (plist-get
                              (seq-find
@@ -111,11 +112,12 @@ To be used with `overleaf-cookies'.  The Firefox folder should be located at `~/
                               profiles)
                              :data)
                           (overleaf--completing-read "Profile: " profiles)))
-               (cookie-copy
-                (let ((file (make-temp-file "overleaf-cookies")))
-                  (copy-file (expand-file-name (concat firefox-folder "/" profile "/cookies.sqlite")) file t)
-                  file))
-               (db (sqlite-open cookie-copy))
+
+               (cookie-file
+                (if profile
+                    (expand-file-name (concat firefox-folder "/" profile "/cookies.sqlite"))
+                  (user-error "Profile does not exist")))
+               (db (sqlite-open cookie-file))
                (result
                 (mapcar
                  (lambda (row)
@@ -127,7 +129,6 @@ To be used with `overleaf-cookies'.  The Firefox folder should be located at `~/
                   db "SELECT host, name, value, expiry FROM moz_cookies WHERE name = 'overleaf_session2' OR name = 'overleaf.sid'"))))
 
           (sqlite-close db)
-          (delete-file cookie-copy)
           result)
       (user-error "Sqlite not available!"))))
 
@@ -1432,6 +1433,8 @@ Optionally prompt for the overleaf server URL."
    (list
     (read-string "Overleaf URL: " (overleaf--url))))
 
+  ;; for mm-url-decode
+  (require 'gnus)
   (overleaf-disconnect)
   (setq-local overleaf-url url)
   (setq-local overleaf-project-id nil)
