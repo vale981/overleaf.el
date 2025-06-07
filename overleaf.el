@@ -188,6 +188,11 @@ or `overleaf-read-cookies-from-chromium' is used."
   :type 'boolean
   :group 'overleaf-mode)
 
+(defcustom overleaf-webdriver-init-function #'overleaf--webdriver-make-session
+  "Function called to create a webdriver session."
+  :type 'function
+  :group 'overleaf-mode)
+
 (defvar-local overleaf-auto-save nil
   "Whether to auto-save the buffer each time a change is synced.")
 
@@ -1022,7 +1027,6 @@ The element is then bound to ELEMENT-SYM and the BODY is executed."
                    ,cookie-domain)))))))
 
 (defun overleaf--webdriver-make-session ()
-  "Create a webdriver session. Advise this function to control browser capabilities."
   (make-instance 'webdriver-session))
 
 ;;;; Change Detection
