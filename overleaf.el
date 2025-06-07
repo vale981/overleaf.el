@@ -188,6 +188,17 @@ or `overleaf-read-cookies-from-chromium' is used."
   :type 'boolean
   :group 'overleaf-mode)
 
+(defcustom overleaf-user-info-template "%n\t%e\t%i"
+  "The `format-spec' template used in `overleaf-list-users'.
+The following specification characters can be used:
+%n -- user's name
+%e -- user's email address
+%i -- user's internal ID
+%w -- `which-function' at user's current cursor position
+      (produces an empty string if `which-function-mode' is not enabled)"
+  :type 'string
+  :group 'overleaf-mode)
+
 (defvar-local overleaf-auto-save nil
   "Whether to auto-save the buffer each time a change is synced.")
 
@@ -321,7 +332,10 @@ Should only contain known-good states.  Is limited to length
      :active overleaf-project-id]
     ["Goto cursor" overleaf-goto-cursor
      :help "Jump to the cursor of another user."
-     :active overleaf-goto-cursor]))
+     :active (overleaf--other-users-p)]
+    ["List active users" overleaf-list-users
+     :help "List other active users in an xref buffer"
+     :active (overleaf--other-users-p)]))
 
 (defvar overleaf--menu-map
   (let ((map (make-sparse-keymap)))
@@ -1347,6 +1361,51 @@ at line ROW and char COLUMN."
          (overleaf--completing-read "User: " choices)
          overleaf--user-positions))))))
 
+(defun overleaf--other-users-p ()
+  "Return non-nil if there are active remote users.
+I.e., their cursor positions are known."
+  (and overleaf--user-positions
+       (< 0 (hash-table-count overleaf--user-positions))))
+
+(defun overleaf--format-user-info (id overlay)
+  "Return a formatted user info given by ID and OVERLAY.
+Format these according to `overleaf-user-info-template'."
+  (propertize
+   (format-spec overleaf-user-info-template
+                `((?n . ,(overlay-get overlay 'name))
+                  (?e . ,(overlay-get overlay 'email))
+                  (?i . ,id)
+                  (?w . ,(if which-function-mode
+	                     (with-current-buffer (overlay-buffer overlay)
+		               (save-excursion
+		                 (goto-char (overlay-start overlay))
+		                 (or (which-function) "")))
+	                   ""))))
+   'face `(:foreground ,(overlay-get overlay 'color))))
+
+(defun overleaf-list-users ()
+  "List other users' cursor positions in an xref buffer.
+See variable `overleaf-user-info-template' for customization."
+  (interactive)
+  (let* ((buff (current-buffer)) ;; Save it to make 'g' work in *xref* buffer.
+         (xref-fn
+          (lambda ()
+            (with-current-buffer buff
+	      (let ((xrefs))
+	        (maphash
+	         (lambda (id overlay)
+		   (cl-pushnew
+		    (xref-make
+                     (overleaf--format-user-info id overlay)
+                     (xref-make-buffer-location (overlay-buffer overlay)
+		                                (overlay-start overlay)))
+		    xrefs))
+	         overleaf--user-positions)
+	        xrefs)))))
+    (if (overleaf--other-users-p)
+        (xref-show-xrefs xref-fn nil)
+      (overleaf--message "No other users edit this document."))))
+
 (defun overleaf-toggle-track-changes ()
   "Toggle track-changes feature change on overleaf."
   (interactive)
@@ -1637,7 +1696,8 @@ Interactively with no argument, this command toggles the mode."
    (overleaf--key "t" overleaf-toggle-track-changes)
    (overleaf--key "s" overleaf-toggle-auto-save)
    (overleaf--key "b" overleaf-browse-project)
-   (overleaf--key "g" overleaf-goto-cursor))
+   (overleaf--key "g" overleaf-goto-cursor)
+   (overleaf--key "l" overleaf-list-users))
 
   (if overleaf-mode
       (overleaf--init)
