@@ -139,7 +139,8 @@ The available keybindings
   - =[prefix] t= - toggle track-changes
   - =[prefix] s= - toggle auto-save
   - =[prefix] b= - browse project
-  - =[prefix] b= - go to the cursor of another user
+  - =[prefix] g= - go to the cursor of another user
+  - =[prefix] l= - list users' cursor positions in an xref buffer
 
 * Troubleshooting
 Rather verbose logging may be enabled by setting ~overleaf-debug~ to ~t~.
