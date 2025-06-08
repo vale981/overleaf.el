@@ -1376,11 +1376,11 @@ Format these according to `overleaf-user-info-template'."
                   (?e . ,(overlay-get overlay 'email))
                   (?i . ,id)
                   (?w . ,(if which-function-mode
-	                     (with-current-buffer (overlay-buffer overlay)
-		               (save-excursion
-		                 (goto-char (overlay-start overlay))
-		                 (or (which-function) "")))
-	                   ""))))
+                             (with-current-buffer (overlay-buffer overlay)
+                               (save-excursion
+                                 (goto-char (overlay-start overlay))
+                                 (or (which-function) "")))
+                           ""))))
    'face `(:foreground ,(overlay-get overlay 'color))))
 
 (defun overleaf-list-users ()
@@ -1391,17 +1391,17 @@ See variable `overleaf-user-info-template' for customization."
          (xref-fn
           (lambda ()
             (with-current-buffer buff
-	      (let ((xrefs))
-	        (maphash
-	         (lambda (id overlay)
-		   (cl-pushnew
-		    (xref-make
+              (let ((xrefs))
+                (maphash
+                 (lambda (id overlay)
+                   (cl-pushnew
+                    (xref-make
                      (overleaf--format-user-info id overlay)
                      (xref-make-buffer-location (overlay-buffer overlay)
-		                                (overlay-start overlay)))
-		    xrefs))
-	         overleaf--user-positions)
-	        xrefs)))))
+                                                (overlay-start overlay)))
+                    xrefs))
+                 overleaf--user-positions)
+                xrefs)))))
     (if (overleaf--other-users-p)
         (xref-show-xrefs xref-fn nil)
       (overleaf--message "No other users edit this document."))))
