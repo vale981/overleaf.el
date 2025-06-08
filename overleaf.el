@@ -170,10 +170,6 @@ To be used with `overleaf-save-cookies'."
   "The idle-timer delay to flush the edit queue."
   :type 'float)
 
-(defcustom overleaf-message-interval .5
-  "The interval for the timer that syncs changes to overleaf."
-  :type 'float)
-
 (defcustom overleaf-debug nil
   "Whether to log debug messages."
   :type 'boolean)
@@ -255,20 +251,10 @@ Used to inhibit the change detection.")
 
 See `overleaf--edit-queue'.")
 
-(defvar-local overleaf--message-timer nil
-  "A timer that sends edits from the message queue if it isn't empty.
-
-See `overleaf--message-queue'.")
-
 (defvar-local overleaf--edit-queue '()
   "A list of edits that can be send in one go.")
 
-(defvar-local overleaf--send-message-queue '()
-  "A list of messages containing edits that have yet to be synced to overleaf.
-
-See `overleaf--message-timer'.")
-
-(defvar-local overleaf--edit-in-flight nil
+(defvar-local overleaf--edits-in-flight nil
   "If non-nil, we still await the acknowledgment from overleaf.")
 
 (defvar-local overleaf--doc-version -2
@@ -302,6 +288,13 @@ Should only contain known-good states.  Is limited to length
 
 (defvar-local overleaf-history-buffer-length 50
   "How many past versions of the buffer to keep in memory.")
+
+(defvar-local overleaf--recent-updates nil
+  "An alist of recent updates received from overleaf.
+
+An alist that contains the `overleaf-update-buffer-length'
+recent updates.  It has elements of the form `((from-version
+. (to-version . update)) ...)'.")
 
 (defvar-local overleaf-update-buffer-length 50
   "How many past updates of the buffer to keep in memory.")
@@ -373,6 +366,28 @@ BUFFER is the buffer value after applying the update."
   "Print a message with format string STRING and arguments ARGS."
   `(message  ,(concat "Overleaf: " string) ,@args))
 
+(defmacro overleaf--save-context (&rest body)
+  "Like `save-excursion' but using text search with context window.
+
+Executes BODY and then tries to reset the point.
+The context window size is configured using `overleaf-context-size'."
+  (let ((pos (gensym))
+        (context-before (gensym))
+        (context-after (gensym))
+        (context (gensym)))
+    `(let ((,pos (point)))
+       (cl-destructuring-bind (,context-before ,context-after ,context) (overleaf--extract-context-at-point)
+         ,@body
+         (goto-char ,pos)
+         (ignore-errors
+           (when (> ,pos 1)
+             (backward-char (1+ (length ,context-before))))
+           (if (search-forward ,context nil t)
+               (backward-char (length ,context-after))
+             (if (search-backward ,context nil t)
+                 (forward-char (length ,context-before))
+               (goto-char ,pos))))))))
+
 ;;;; Communication
 
 (defun overleaf--get-full-cookies ()
@@ -415,17 +430,6 @@ BUFFER is the buffer value after applying the update."
        (websocket-openp overleaf--websocket)
        (>= overleaf--doc-version -1)))
 
-(defun overleaf--make-message-timer ()
-  "Make the timer that regularly sends messages to overleaf."
-  (with-current-buffer overleaf--buffer
-    (when (overleaf--connected-p)
-      (setq-local
-       overleaf--message-timer
-       (progn
-         (when overleaf--message-timer
-           (cancel-timer overleaf--message-timer))
-         (run-at-time t overleaf-message-interval #'overleaf--send-queued-message overleaf--buffer))))))
-
 (defun overleaf--on-open (websocket)
   "Handle the open even of the web-socket WEBSOCKET."
   (let ((overleaf--buffer
@@ -443,7 +447,12 @@ BUFFER is the buffer value after applying the update."
        (progn
          (when overleaf--flush-edit-queue-timer
            (cancel-timer overleaf--flush-edit-queue-timer))
-         (run-with-idle-timer overleaf-flush-interval t #'overleaf--flush-edit-queue overleaf--buffer))))))
+         (run-with-idle-timer overleaf-flush-interval t
+                              (lambda (buffer)
+                                (with-current-buffer buffer
+                                  (unless overleaf--receiving
+                                    (overleaf--flush-edit-queue buffer))))
+                              overleaf--buffer))))))
 
 (defun overleaf--on-message (ws frame)
   "Handle a message received from websocket WS with contents FRAME."
@@ -461,7 +470,6 @@ BUFFER is the buffer value after applying the update."
         (when overleaf--websocket
           (overleaf--message "Websocket for document %s closed." overleaf-document-id)
           (setq-local buffer-read-only nil)
-          (cancel-timer overleaf--message-timer)
           (cancel-timer overleaf--flush-edit-queue-timer)
           (remhash (websocket-url ws) overleaf--ws-url->buffer-table)
           (setq-local overleaf--websocket nil)
@@ -476,6 +484,8 @@ BUFFER is the buffer value after applying the update."
 (defun overleaf--parse-message (ws message)
   "Parse a message MESSAGE from overleaf, responding by writing to WS."
   (with-current-buffer overleaf--buffer
+    (setq-local overleaf--receiving t)
+
     (pcase-let ((`(,id ,message-raw) (string-split message ":::")))
       (pcase id
         ("2::"
@@ -498,9 +508,6 @@ BUFFER is the buffer value after applying the update."
                  (setq buffer-undo-list nil)
                  (overleaf--set-version version)
                  (overleaf--push-to-history version)
-                 (overleaf--make-message-timer)
-                 (overleaf--write-buffer-variables)
-
 
                  ;; Copied from `fill-paragraph':
                  ;; If we didn't change anything in the buffer (and the buffer
@@ -508,8 +515,14 @@ BUFFER is the buffer value after applying the update."
                  ;; back to "unchanged".
                  (when (and hash
                             (equal hash (buffer-hash)))
-                   (set-buffer-modified-p nil))))))
-         (overleaf--update-modeline))
+                   (set-buffer-modified-p nil))))
+             (run-with-idle-timer
+              1 nil
+              (lambda (buffer)
+                (with-current-buffer buffer
+                  (overleaf--write-buffer-variables)))
+              overleaf--buffer)
+             (overleaf--update-modeline))))
         ("5"
          (when message-raw
            (when-let* ((message (json-parse-string message-raw :object-type 'plist :array-type 'list))
@@ -563,20 +576,15 @@ BUFFER is the buffer value after applying the update."
                   (websocket-send-text ws res))
                 (overleaf--send-position-update))
                ("otUpdateApplied"
-                (setq-local overleaf--receiving t)
-                (cancel-timer overleaf--message-timer)
                 (let ((last-version (plist-get (car (plist-get message :args)) :lastV))
                       (version (plist-get (car (plist-get message :args)) :v))
                       (hash (plist-get (car (plist-get message :args)) :hash))
                       (overleaf--is-overleaf-change t)
                       (edits (when (plist-get message :args) (plist-get (car  (plist-get message :args)) :op))))
-                  (message "%S Got update with version %s->%s (buffer version %s) %S" (buffer-name) last-version version overleaf--doc-version message)
+                  (overleaf--debug "%S Got update with version %s->%s (buffer version %s) %S" (buffer-name) last-version version overleaf--doc-version message)
                   (overleaf--apply-changes edits version last-version hash)
-                  (setq-local overleaf--receiving nil)
-                  (overleaf--send-position-update)
-                  (with-current-buffer overleaf--buffer
-                    (overleaf--send-queued-message)
-                    (overleaf--make-message-timer))))))))))))
+                  (overleaf--send-position-update)))))))))
+    (setq-local overleaf--receiving nil)))
 
 (defun overleaf--get-files (folder &optional parent)
   "Recursively parse overleafs FOLDER structure to list all documents.
@@ -625,9 +633,19 @@ overleaf version history."
       (when overleaf-auto-save
         (save-buffer)))))
 
-(defun overleaf--queue-message (message)
-  "Queue edit MESSAGE leading to buffer version VERSION to be send to overleaf."
-  (setq overleaf--send-message-queue (nconc overleaf--send-message-queue (list message))))
+(defun overleaf--push-to-recent-updates (update)
+  "Splice the UPDATE of type `overleaf--update' into `overleaf--recent-updates'."
+  (let ((from-version (overleaf--update-from-version update))
+        (to-version (overleaf--update-to-version update)))
+    (when (and from-version to-version overleaf--buffer)
+      (with-current-buffer overleaf--buffer
+        (setq-local overleaf--recent-updates
+                    (overleaf--splice-into
+                     overleaf--recent-updates from-version (cons to-version update)
+                     t))
+        (setq-local overleaf--recent-updates
+                    (overleaf--truncate
+                     overleaf--recent-updates overleaf-update-buffer-length))))))
 
 (defun overleaf--send-position-update ()
   "Send a position tracking update to overleaf."
@@ -639,197 +657,122 @@ overleaf version history."
         "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
         (1- (line-number-at-pos)) (current-column) overleaf-document-id)))))
 
-(defun overleaf--send-queued-message (&optional buffer)
-  "Send the next message in the message queue to overleaf.
-
-Send a message from the edit message queue of BUFFER if there is no
-other edit in flight."
-  (let ((overleaf--buffer (or buffer overleaf--buffer)))
-    (when overleaf--buffer
-      (with-current-buffer overleaf--buffer
-        (unless (or overleaf--edit-in-flight overleaf--receiving)
-          (when overleaf--send-message-queue
-            (when-let* ((message (car overleaf--send-message-queue))
-                        (current-version (overleaf--queued-message-doc-version message))
-                        (next-version (1+ current-version)))
-              (websocket-send-text
-               overleaf--websocket
-               (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":%s%s,\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
-                       overleaf--sequence-id
-                       overleaf-document-id
-                       overleaf-document-id
-                       (json-encode (apply #'vector (overleaf--queued-message-edits message)))
-                       (if (overleaf--queued-message-track-changes message)
-                           (format ",\"meta\": {\"tc\":\"%s\"}"
-                                   (overleaf--random-string 18))
-                         "")
-                       next-version
-                       current-version
-                       (overleaf--queued-message-hash message)))
-              (overleaf--debug "%s" (overleaf--queued-message-buffer message))
-              ;; (sleep-for .1)
-              ;; (overleaf--send-position-update)
-              (setq-local overleaf--sequence-id (1+ overleaf--sequence-id))
-
-              (setq-local overleaf--edit-in-flight
-                          (make-overleaf--update
-                           :from-version current-version
-                           :to-version next-version
-                           :edits (overleaf--queued-message-edits message)
-                           :hash (overleaf--queued-message-hash message)
-                           :buffer (overleaf--queued-message-buffer message)))
-              (overleaf--debug "send %S %i %i" (buffer-name) current-version next-version)
-              (setq overleaf--send-message-queue (cdr overleaf--send-message-queue)))))))))
-
-(defun overleaf--apply-changes-internal (edits &optional context)
+(defun overleaf--apply-changes-internal (edits)
   "Parse the edit list EDITS and apply them to the buffer.
 
 Returns the edits as applied.  This is required because deletions might
 no longer be possible, or will occur at a different location.  If CONTEXT
 is provided use the context to fine tune where the edit is applied."
-  (let* ((overleaf--is-overleaf-change t)
-         (cur-pos (point))
-         (pos-diff (if (and edits context)
-                       (pcase-let ((orig-pos (1+ (plist-get (car edits) :p)))
-                                   (`(,context-before ,context-after ,context) context))
-                         (goto-char orig-pos)
-                         (ignore-errors (backward-char (length context-before)))
-                         (if (search-forward context nil t)
-                             (progn
-                               (ignore-errors (backward-char (length context-after)))
-                               (- (point) orig-pos))
-                           (goto-char orig-pos)
-                           (ignore-errors (forward-char (length context-after)))
-                           (if (search-backward context nil t)
-                               (progn
-                                 (ignore-errors (forward-char (length context-before)))
-                                 (- (point) orig-pos))
-                             nil)))
-                     0)))
-    (goto-char cur-pos)
-    (unless (eq nil pos-diff)
-      (remq nil
-            (mapcar
-             (lambda (op)
-               (let ((pos (+ (1+ (plist-get op :p)) pos-diff)))
-                 (goto-char pos)
-                 (if-let* ((insert (plist-get op :i)))
-                     (progn
-                       (insert insert)
-                       (unless context
-                         (goto-char
-                          (if (> cur-pos pos)
-                              (+ cur-pos (length insert))
-                            cur-pos)))
-                       (setq buffer-undo-list (memq nil buffer-undo-list))
-                       `(:p ,(1- pos) :i ,insert))
+  (let ((overleaf--is-overleaf-change t)
+        (new-edits nil))
+    (dolist (op edits)
+      (let ((pos (1+ (plist-get op :p))))
+        (goto-char pos)
+        (if-let* ((insert (plist-get op :i)))
+            (progn
+              (insert insert)
+              (setq buffer-undo-list (memq nil buffer-undo-list))
+              (push `(:p ,(1- pos) :i ,insert) new-edits))
 
-                   (if-let* ((delete (plist-get op :d)))
-                       (save-match-data
-                         (if (re-search-forward (regexp-quote delete) nil t)
-                             (progn
-                               (let ((delete-loc (1- (- (point) (length delete)))))
-                                 (replace-match "")
-                                 (setq buffer-undo-list (memq nil buffer-undo-list))
-                                 (unless context
-                                   (goto-char
-                                    (if (> cur-pos pos)
-                                        (- cur-pos (length delete))
-                                      cur-pos)))
-                                 `(:p ,delete-loc :d ,delete)))
-                           nil)))
-                   )))
-             edits)))))
+          (if-let* ((delete (plist-get op :d)))
+              (save-match-data
+                (if (re-search-forward (regexp-quote delete) nil t)
+                    (progn
+                      (let ((delete-loc (1- (- (point) (length delete)))))
+                        (replace-match "")
+                        (setq buffer-undo-list (memq nil buffer-undo-list))
+                        (push `(:p ,delete-loc :d ,delete) new-edits)))
+                  (setq edits nil)))))))
+    (nreverse new-edits)))
 
 (defun overleaf--verify-buffer (hash)
   "Verify that the current buffer has the hash HASH.
 Re-connect if this is not the case."
+  (overleaf--debug "Verify")
   (when (and hash
              (not (string= (overleaf--get-hash) hash)))
+    (overleaf--debug "%s" (buffer-string))
     (overleaf--warn "Hash mismatch... reconnecting")
     (setq-local buffer-read-only t)
-    (setq-local overleaf--send-message-queue nil)
-    (overleaf-disconnect)))
+    (overleaf-connect)))
 
-(cl-defun overleaf--apply-changes (edits version last-version hash)
+(defun overleaf--transform-edits (edits history-edits)
+  "Transform EDITS to new positions by HISTORY-EDITS that came after the EDITS."
+  (dolist (history-op history-edits)
+    (setq edits
+          (mapcar
+           (lambda (op)
+             (let ((history-position (plist-get history-op :p))
+                   (position (plist-get op :p))
+                   (delta 0))
+               (if (<= history-position position)
+                   (progn
+                     (overleaf--debug "--------> updating: history: %S  this: %S" history-op op)
+
+                     (plist-put
+                      op :p
+                      (+ position (let* ((insert (plist-get history-op :i))
+                                         (delete (plist-get history-op :d)))
+                                    (+ (if insert (length insert) 0)
+                                       (if delete (* -1 (length delete)) 0))))))
+                 op)))
+           edits)))
+  edits)
+
+(defun overleaf--apply-changes (edits version last-version hash)
   "Apply change EDITS  from version LAST-VERSION to VERSION to have the hash HASH.
 
 If there are some updates to the buffer that haven't yet been
 acknowledged by overleaf or even haven't yet been sent we have to replay
 them on top of the changes received from overleaf in the meantime."
-  (with-current-buffer overleaf--buffer
-    (overleaf--debug "VERSION: %S -> %S %S" last-version version edits)
-    (overleaf--flush-edit-queue overleaf--buffer)
-
-    (let ((overleaf--is-overleaf-change t))
-      (if (and overleaf--edit-in-flight (not edits))
-          (progn
-            (overleaf--debug "%S BINGO, we've been waiting for this. %S %S" (buffer-name) (overleaf--update-to-version overleaf--edit-in-flight) version)
-            (setf (overleaf--update-to-version overleaf--edit-in-flight) version)
-            (overleaf--push-to-history
-             version
-             (when overleaf--send-message-queue
-               (overleaf--queued-message-buffer-before
-                (car overleaf--send-message-queue))))
-
-            (when overleaf--send-message-queue
-              (when (not (= version (overleaf--queued-message-doc-version (car overleaf--send-message-queue))))
-                (overleaf--set-version version)
-                (dolist (message overleaf--send-message-queue)
-                  (overleaf--debug "%S %S" version overleaf--doc-version)
-                  (setf (overleaf--queued-message-doc-version message) overleaf--doc-version)
-                  (overleaf--set-version (1+ overleaf--doc-version)))))
-            (setq overleaf--edit-in-flight nil)))
+  (overleaf--debug "VERSION: %S -> %S Current: %S Edits: %S In flight: %S" last-version version overleaf--doc-version edits (not (not overleaf--edits-in-flight)))
+  (overleaf-queue-current-change)
+  (let ((overleaf--is-overleaf-change t))
+    (if (and overleaf--edits-in-flight (not edits))
+        (progn
+          (let ((update (car overleaf--edits-in-flight)))
+            (overleaf--debug "%S BINGO, we've been waiting for this. %S %S" (buffer-name) (overleaf--update-to-version update) version)
+            (setf (overleaf--update-to-version update) version)
+            (overleaf--push-to-recent-updates
+             update)
+            (overleaf--push-to-history version (buffer-string))
+            (setf (overleaf--update-to-version update) version)
+            (setf (overleaf--update-from-version update) (1- version))
+            (overleaf--push-to-recent-updates update)
+            (overleaf--set-version version))
+          (setq overleaf--edits-in-flight (cdr overleaf--edits-in-flight)))
 
       (when edits
-        ;; FIXME: does this ever actually HAPPEN?
-        (if overleaf--edit-in-flight
-            (overleaf--reset-buffer-to (overleaf--queued-message-buffer-before overleaf--edit-in-flight))
-          (when overleaf--send-message-queue
-            (overleaf--reset-buffer-to (overleaf--queued-message-buffer-before (car overleaf--send-message-queue)))))
+        (overleaf--save-context
+         (with-current-buffer overleaf--buffer
+           (when overleaf--edit-queue
+             (overleaf--debug "-------------> RESET")
+             (overleaf--reset-buffer-to overleaf--buffer-before-edit-queue))
 
-        (overleaf--apply-changes-internal edits)
-        (overleaf--set-version version)
-        (when hash (overleaf--verify-buffer hash))
-        (overleaf--push-to-history version)
+           (when overleaf--edits-in-flight
+             (overleaf--reset-buffer-to (overleaf--update-buffer (car overleaf--edits-in-flight))))
 
-        (when overleaf--edit-in-flight
-          (overleaf--warn "An update was in flight while we received another update from the server.")
-          (setf (overleaf--queued-message-doc-version overleaf--edit-in-flight) (1+ version))
-          (overleaf--debug "----------> %S" overleaf--edit-in-flight)
-          (setf (overleaf--update-from-version overleaf--edit-in-flight) overleaf--doc-version)
+           (overleaf--apply-changes-internal edits)
+           (overleaf--set-version version)
+           (when (and hash (not overleaf--edits-in-flight)) (overleaf--verify-buffer hash))
+           (overleaf--push-to-history version)
+           (overleaf--push-to-recent-updates
+            (make-overleaf--update
+             :edits edits
+             :from-version (1- version) ;; we updated it so that there's no jump
+             :to-version version
+             :edits edits
+             :buffer ""))
 
-          (if (overleaf--apply-changes-internal (overleaf--update-edits overleaf--edit-in-flight))
-              (progn
-                (setf (overleaf--update-buffer overleaf--edit-in-flight) (buffer-string))
-                (overleaf--set-version (1+ overleaf--doc-version)))
-            (overleaf--debug "failed to apply")
-            (setq-local overleaf--edit-in-flight nil)))
+           (if overleaf--edit-queue
+               (progn
+                 (when edits
+                   (setq overleaf--edit-queue (overleaf--transform-edits overleaf--edit-queue edits)))
+                 (setq overleaf--buffer-before-edit-queue (buffer-string))
+                 (setq overleaf--edit-queue (overleaf--apply-changes-internal overleaf--edit-queue)))
+             (overleaf--reset-edit-queue))))))
 
-        (when overleaf--send-message-queue
-          (let ((buffer-before-application nil)
-                (new-edit-queue nil))
-            (cl-dolist (change overleaf--send-message-queue)
-              (overleaf--debug "->>>>>>>>>>>>>>>>>>>>>>>>>>>> (%S) (%S) %S" overleaf--doc-version version (overleaf--queued-message-edits change))
-              (setq buffer-before-application (buffer-string))
-              (if-let* ((edits
-                         (overleaf--apply-changes-internal
-                          (overleaf--queued-message-edits change)
-                          (overleaf--queued-message-context change))))
-                  (progn
-                    (setf (overleaf--queued-message-doc-version change) overleaf--doc-version)
-                    (setf (overleaf--queued-message-hash change) (overleaf--get-hash))
-                    (setf (overleaf--queued-message-edits change) edits)
-                    (setf (overleaf--queued-message-buffer-before change) buffer-before-application)
-                    (setf (overleaf--queued-message-buffer change) (buffer-string))
-                    (setq new-edit-queue (nconc new-edit-queue (list change)))
-                    (overleaf--set-version (1+ overleaf--doc-version))
-                    (overleaf--debug "%S" (buffer-string)))
-                (overleaf--reset-buffer-to buffer-before-application)
-                (setq overleaf--send-message-queue nil)))
-
-            (setq overleaf--send-message-queue new-edit-queue))))
-      (overleaf--update-modeline))))
+    (overleaf--update-modeline)))
 
 ;;;; Misc
 
@@ -892,18 +835,17 @@ PADDING (2 characters by default)."
 (defun overleaf--write-buffer-variables ()
   "Write the current buffer-local variables to the buffer."
   (when (overleaf--connected-p)
-    (let ((pos (point)))
-      (let ((overleaf--is-overleaf-change nil)
-            (track-changes overleaf-track-changes))
-        (setq-local overleaf-track-changes nil)
-        (add-file-local-variable 'overleaf-document-id overleaf-document-id)
-        (add-file-local-variable 'overleaf-project-id overleaf-project-id)
-        (add-file-local-variable 'overleaf-track-changes track-changes)
-        (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
-        (add-file-local-variable 'overleaf-url overleaf-url)
-        (overleaf--flush-edit-queue (current-buffer))
-        (setq-local overleaf-track-changes track-changes)
-        (goto-char pos)))))
+    (let ((pos (point))
+          (overleaf--is-overleaf-change nil)
+          (track-changes overleaf-track-changes))
+      (setq-local overleaf-track-changes nil)
+      (add-file-local-variable 'overleaf-document-id overleaf-document-id)
+      (add-file-local-variable 'overleaf-project-id overleaf-project-id)
+      (add-file-local-variable 'overleaf-track-changes track-changes)
+      (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
+      (add-file-local-variable 'overleaf-url overleaf-url)
+      (setq-local overleaf-track-changes track-changes)
+      (goto-char pos))))
 
 (defun overleaf--save-buffer ()
   "Safely save the buffer."
@@ -964,18 +906,9 @@ Version: 2024-04-03"
 
 (defun overleaf--reset-buffer-to (contents)
   "Erase the buffer and insert CONTENTS while trying to keep the point position."
-  (pcase-let ((pos (point))
-              (`(,context-before ,context-after ,context) (overleaf--extract-context-at-point)))
-    (erase-buffer)
-    (insert contents)
-    (goto-char pos)
-    (when (> pos 1)
-      (ignore-errors (backward-char (1+ (length context-before)))))
-    (if (search-forward context nil t)
-        (ignore-errors (backward-char (length context-after)))
-      (if (search-backward context nil t)
-          (ignore-errors (forward-char (length context-before)))
-        (goto-char pos)))))
+  (overleaf--save-context
+   (erase-buffer)
+   (insert contents)))
 
 ;;;; Logging
 (defsubst overleaf--debug (format-string &rest args)
@@ -1042,6 +975,7 @@ The element is then bound to ELEMENT-SYM and the BODY is executed."
 (defvar-local overleaf--last-change-end 0)
 (defvar-local overleaf--deletion-buffer "")
 (defvar-local overleaf--change-context nil)
+(defvar-local overleaf--buffer-before-change nil)
 
 (defun overleaf--after-change-function (begin end length)
   "The after change hook that is called after the buffer changed.
@@ -1050,91 +984,91 @@ overleaf."
   (let ((overleaf--buffer (current-buffer)))
     (overleaf--debug "after (%i %i) %i (%i %i) %S" begin end length overleaf--last-change-begin overleaf--last-change-end overleaf--last-change-type)
     (unless overleaf--is-overleaf-change
-      (let ((new (buffer-substring-no-properties begin end)))
-        ;; the before change hook tends to lie about the end of the region
-        (setq overleaf--before-change (substring overleaf--before-change 0 length))
-        (setq overleaf--before-change-end (+ overleaf--before-change-begin length))
+      (if overleaf--receiving
+          (overleaf--reset-buffer-to overleaf--buffer-before-change)
+        (let ((new (buffer-substring-no-properties begin end)))
+          ;; the before change hook tends to lie about the end of the region
+          (setq overleaf--before-change (substring overleaf--before-change 0 length))
+          (setq overleaf--before-change-end (+ overleaf--before-change-begin length))
 
-        (unless overleaf--change-context
-          (save-excursion
-            (let ((buf-text overleaf--buffer-before-edit-queue)
-                  (pos overleaf--before-change-begin))
-              (setq-local overleaf--change-context
-                          (with-temp-buffer
-                            (insert buf-text)
-                            (goto-char pos)
-                            (overleaf--extract-context-at-point))))))
+          (unless overleaf--change-context
+            (save-excursion
+              (let ((buf-text overleaf--buffer-before-edit-queue)
+                    (pos overleaf--before-change-begin))
+                (setq-local overleaf--change-context
+                            (with-temp-buffer
+                              (insert buf-text)
+                              (goto-char pos)
+                              (overleaf--extract-context-at-point))))))
 
 
-        (overleaf--debug "change %s -> %s" (json-encode-string overleaf--before-change) (json-encode-string new))
-        (unless (and (equal new overleaf--before-change))
-          (let ((empty-before (equal overleaf--before-change ""))
-                (empty-after (equal new "")))
+          (overleaf--debug "change %s -> %s" (json-encode-string overleaf--before-change) (json-encode-string new))
+          (unless (and (equal new overleaf--before-change))
+            (let ((empty-before (equal overleaf--before-change ""))
+                  (empty-after (equal new "")))
 
-            (cond
-             (empty-before
-              (let ((begin-matches (= begin overleaf--last-change-end))
-                    (end-matches (= begin overleaf--last-change-begin)))
-                (overleaf--debug "insert \"%s\" %S" new overleaf--last-change-begin)
+              (cond
+               (empty-before
+                (let ((begin-matches (= begin overleaf--last-change-end))
+                      (end-matches (= begin overleaf--last-change-begin)))
+                  (overleaf--debug "insert \"%s\" %S" new overleaf--last-change-begin)
 
-                (if (or (not overleaf--last-change-type) (eq overleaf--last-change-type :d) (not (or begin-matches end-matches)))
+                  (if (or (not overleaf--last-change-type) (eq overleaf--last-change-type :d) (not (or begin-matches end-matches)))
+                      (progn
+                        (overleaf--debug "looks like a new insert!")
+
+                        (setq overleaf--last-change-type :i)
+                        (setq overleaf--last-change-end end)
+                        (setq overleaf--last-change-begin begin))
+                    (setq overleaf--last-change-type :i)
+
+                    ;; extend
+                    (cond
+                     (begin-matches
+                      (overleaf--debug "Extending right to %s" end)
+                      (setq overleaf--last-change-end end))
+                     (end-matches
+                      (overleaf--debug "Extending left to %s" end)
+                      (setq overleaf--last-change-begin begin)
+                      (setq overleaf--last-change-end (+ overleaf--last-change-end (- end begin))))))))
+               (empty-after
+                (overleaf--debug "delete")
+
+                (unless overleaf--last-change-type
+                  (setq-local overleaf--last-change-begin overleaf--before-change-begin)
+                  (setq-local overleaf--last-change-end end))
+
+                (setq overleaf--last-change-type :d)
+                (if (> overleaf--last-change-begin  overleaf--before-change-begin)
                     (progn
-                      (overleaf--debug "looks like a new insert!")
-
-                      (setq overleaf--last-change-type :i)
-                      (setq overleaf--last-change-end end)
-                      (setq overleaf--last-change-begin begin))
-                  (setq overleaf--last-change-type :i)
-
-                  ;; extend
-                  (cond
-                   (begin-matches
-                    (overleaf--debug "Extending right to %s" end)
-                    (setq overleaf--last-change-end end))
-                   (end-matches
-                    (overleaf--debug "Extending left to %s" end)
-                    (setq overleaf--last-change-begin begin)
-                    (setq overleaf--last-change-end (+ overleaf--last-change-end (- end begin))))))))
-             (empty-after
-              (overleaf--debug "delete")
-
-              (unless overleaf--last-change-type
+                      (setq overleaf--last-change-begin overleaf--before-change-begin)
+                      (setq-local overleaf--deletion-buffer (concat overleaf--before-change overleaf--deletion-buffer)))
+                  (setq-local overleaf--deletion-buffer (concat overleaf--deletion-buffer overleaf--before-change))
+                  (setq overleaf--last-change-end end))
+                (setq-local overleaf--last-change-begin overleaf--before-change-begin))
+               (t
+                (overleaf--debug "====> Complicated Change")
+                (overleaf--debug "====> Restored previous version... replaying")
+                (overleaf--debug "====> Deleting %s" (buffer-substring-no-properties begin end))
+                (let ((overleaf--is-overleaf-change t))
+                  (delete-region begin end))
                 (setq-local overleaf--last-change-begin overleaf--before-change-begin)
-                (setq-local overleaf--last-change-end end))
+                (setq-local overleaf--last-change-end (+ overleaf--before-change-begin length))
+                (setq-local overleaf--last-change-type :d)
+                (setq-local overleaf--deletion-buffer overleaf--before-change)
+                (overleaf--debug "====> Claiming to have deleted %s" overleaf--before-change)
+                (when (< end (point-max))
+                  (overleaf--debug "====> buffer is now %s" (buffer-substring-no-properties begin end)))
 
-              (setq overleaf--last-change-type :d)
-              (if (> overleaf--last-change-begin  overleaf--before-change-begin)
-                  (progn
-                    (setq overleaf--last-change-begin overleaf--before-change-begin)
-                    (setq-local overleaf--deletion-buffer (concat overleaf--before-change overleaf--deletion-buffer)))
-                (setq-local overleaf--deletion-buffer (concat overleaf--deletion-buffer overleaf--before-change))
-                (setq overleaf--last-change-end end))
-              (setq-local overleaf--last-change-begin overleaf--before-change-begin))
-             (t
-              (overleaf--debug "====> Complicated Change")
-              (overleaf--debug "====> Restored previous version... replaying")
-              (overleaf--debug "====> Deleting %s" (buffer-substring-no-properties begin end))
-              (let ((overleaf--is-overleaf-change t))
-                (delete-region begin end))
-              (setq-local overleaf--last-change-begin overleaf--before-change-begin)
-              (setq-local overleaf--last-change-end (+ overleaf--before-change-begin length))
-              (setq-local overleaf--last-change-type :d)
-              (setq-local overleaf--deletion-buffer overleaf--before-change)
-              (overleaf--debug "====> Claiming to have deleted %s" overleaf--before-change)
-              (when (< end (point-max))
-                (overleaf--debug "====> buffer is now %s" (buffer-substring-no-properties begin end)))
-
-              (overleaf-queue-current-change)
-              (overleaf--flush-edit-queue overleaf--buffer)
-              (goto-char overleaf--before-change-begin)
-              (setq-local overleaf--last-change-begin begin)
-              (setq-local overleaf--last-change-end end)
-              (setq-local overleaf--last-change-type :i)
-              (overleaf--debug "====> Inserting %s" new)
-              (let ((overleaf--is-overleaf-change t))
-                (insert new))
-              (overleaf-queue-current-change)
-              (overleaf--flush-edit-queue overleaf--buffer)))))))))
+                (overleaf-queue-current-change)
+                (goto-char overleaf--before-change-begin)
+                (setq-local overleaf--last-change-begin begin)
+                (setq-local overleaf--last-change-end end)
+                (setq-local overleaf--last-change-type :i)
+                (overleaf--debug "====> Inserting %s" new)
+                (let ((overleaf--is-overleaf-change t))
+                  (insert new))
+                (overleaf-queue-current-change))))))))))
 
 (defun overleaf--before-change-function (begin end)
   "Change hook called to signal an impending change between BEGIN and END.
@@ -1142,54 +1076,78 @@ overleaf."
 Mainly used to detect switchover between deletion and insertion."
   (unless overleaf--is-overleaf-change
     (let ((overleaf--buffer (current-buffer)))
-      (overleaf--debug "before (%i %i) (%i %i)" begin end overleaf--last-change-begin overleaf--last-change-end)
-      (setq-local overleaf--before-change (buffer-substring-no-properties begin end))
-      (setq-local overleaf--before-change-begin begin)
-      (setq-local overleaf--before-change-end end)
-      (unless overleaf--change-context
-        (save-excursion
-          (goto-char begin)
-          (setq-local overleaf--change-context (overleaf--extract-context-at-point))
-          (overleaf--debug "Change context: %S" overleaf--change-context)))
-      (when
-          (or
-           (not (or (= begin overleaf--last-change-begin)
-                    (= begin overleaf--last-change-end)
-                    (= end overleaf--last-change-begin)
-                    (= end overleaf--last-change-end)))
-           (and (= end begin) (or (eq overleaf--last-change-type :d)))
-           (and (eq overleaf--last-change-type :i) (or (> end begin) (> (length overleaf--before-change) 0)))
-           ;; (or (> (max (- end begin) (- overleaf--last-change-end overleaf--last-change-begin))
-           ;;        10))
-           )
-        (overleaf--debug "Edit type switchover --> flushing edit queue %s" overleaf--edit-queue)
-        (overleaf-queue-current-change)
-        (overleaf--flush-edit-queue (current-buffer))))))
+      (if overleaf--receiving
+          (setq overleaf--buffer-before-change (buffer-string))
+        (overleaf--debug "before (%i %i) (%i %i)" begin end overleaf--last-change-begin overleaf--last-change-end)
+        (setq-local overleaf--before-change (buffer-substring-no-properties begin end))
+        (setq-local overleaf--before-change-begin begin)
+        (setq-local overleaf--before-change-end end)
+        (unless overleaf--change-context
+          (save-excursion
+            (goto-char begin)
+            (setq-local overleaf--change-context (overleaf--extract-context-at-point))
+            (overleaf--debug "Change context: %S" overleaf--change-context)))
+        (when
+            (or
+             (not (or (= begin overleaf--last-change-begin)
+                      (= begin overleaf--last-change-end)
+                      (= end overleaf--last-change-begin)
+                      (= end overleaf--last-change-end)))
+             (and (= end begin) (or (eq overleaf--last-change-type :d)))
+             (and (eq overleaf--last-change-type :i) (or (> end begin) (> (length overleaf--before-change) 0)))
+             ;; (or (> (max (- end begin) (- overleaf--last-change-end overleaf--last-change-begin))
+             ;;        10))
+             )
+          (overleaf--debug "Edit type switchover --> flushing edit queue %s" overleaf--edit-queue)
+          (overleaf-queue-current-change))))))
+
+(defun overleaf--reset-edit-queue ()
+  "Empty the edit queue and reset buffer to before the edit queue."
+  (setq-local overleaf--buffer-before-edit-queue (buffer-string))
+  (setq overleaf--edit-queue '())
+  (setq overleaf--change-context nil))
 
 (defun overleaf--flush-edit-queue (buffer)
-  "Make an edit message and append it to the message queue of BUFFER."
+  "Send an edit message and append it to the edit queue of BUFFER."
   (when buffer
     (let ((overleaf--buffer buffer))
       (with-current-buffer buffer
         (overleaf-queue-current-change)
         (when (and overleaf--websocket (websocket-openp overleaf--websocket) overleaf--edit-queue)
-          (let ((buf-string (buffer-substring-no-properties (point-min) (point-max))))
+          (let ((buf-string (buffer-substring-no-properties (point-min) (point-max)))
+                (next-version (1+ overleaf--doc-version))
+                (edits (mapcar #'copy-sequence overleaf--edit-queue))
+                (hash (overleaf--get-hash)))
             (setq-local buffer-read-only t)
             (overleaf--debug "======> FLUSH %S %i %S" (buffer-name) overleaf--doc-version overleaf--edit-queue)
             (overleaf--debug "Change context: %S" overleaf--change-context)
-            (overleaf--queue-message
-             (make-overleaf--queued-message
-              :edits (mapcar #'copy-sequence overleaf--edit-queue)
-              :doc-version overleaf--doc-version
-              :hash (overleaf--get-hash)
-              :track-changes overleaf-track-changes
-              :buffer-before overleaf--buffer-before-edit-queue
-              :buffer buf-string
-              :context overleaf--change-context))
-            (setq-local overleaf--buffer-before-edit-queue (concat buf-string))
-            (overleaf--set-version (1+ overleaf--doc-version))
-            (setq overleaf--edit-queue '())
-            (setq overleaf--change-context nil)
+            (websocket-send-text
+             overleaf--websocket
+             (format "5:%i+::{\"name\":\"applyOtUpdate\",\"args\":[\"%s\",{\"doc\":\"%s\",\"op\":%s%s,\"v\":%i,\"lastV\":%i,\"hash\":\"%s\"}]}"
+                     overleaf--sequence-id
+                     overleaf-document-id
+                     overleaf-document-id
+                     (json-encode (apply #'vector overleaf--edit-queue))
+                     (if overleaf-track-changes
+                         (format ",\"meta\": {\"tc\":\"%s\"}"
+                                 (overleaf--random-string 18))
+                       "")
+                     next-version
+                     overleaf--doc-version
+                     hash))
+
+            (setq-local overleaf--sequence-id (1+ overleaf--sequence-id))
+            (push
+             (make-overleaf--update
+              :from-version overleaf--doc-version
+              :to-version next-version
+              :edits edits
+              :hash hash
+              :buffer buf-string)
+             overleaf--edits-in-flight)
+            (overleaf--debug "send %S %i %i" (buffer-name) overleaf--doc-version next-version)
+            (overleaf--reset-edit-queue)
+            (overleaf--set-version next-version)
             (setq-local buffer-read-only nil)))))))
 
 (defun overleaf--queue-edit (edit)
@@ -1587,11 +1545,11 @@ automatically.  Both these variables will be saved to the buffer."
 
                 (setq-local overleaf--last-good-state nil)
                 (setq-local overleaf--history '())
+                (setq-local overleaf--recent-updates '())
                 (setq-local overleaf--last-change-type nil)
                 (setq-local overleaf--deletion-buffer "")
                 (setq-local overleaf--edit-queue '())
-                (setq-local overleaf--send-message-queue '())
-                (setq-local overleaf--edit-in-flight nil)
+                (setq-local overleaf--edits-in-flight nil)
                 (setq-local overleaf--user-positions (make-hash-table :test #'equal))
                 (setq-local buffer-read-only t)
                 (setq-local overleaf--doc-version -2)
@@ -1634,7 +1592,6 @@ automatically.  Both these variables will be saved to the buffer."
      overleaf--user-positions)
     (setq-local overleaf--force-close t)
     (setq-local overleaf--edit-queue '())
-    (setq-local overleaf--send-message-queue '())
     (websocket-close overleaf--websocket)
     (when overleaf-auto-save
       (overleaf--save-buffer))
@@ -1663,11 +1620,11 @@ to the default tooltip text."
         (list
          (cond ((< overleaf--doc-version 0)
                 (overleaf--mode-line-item (if overleaf-use-nerdfont "⟲" "...") "connecting"))
-               ((zerop (length overleaf--send-message-queue))
-                (overleaf--mode-line-item (if overleaf-use-nerdfont "󰄭" "C") "connected\nno pending messages"))
+               ((zerop (length overleaf--edit-queue))
+                (overleaf--mode-line-item (if overleaf-use-nerdfont "󰄭" "C") "connected\nno pending edits"))
                (t
                 (overleaf--mode-line-item
-                 (format "%i" (length overleaf--send-message-queue))
+                 (format "%i" (length overleaf--edit-queue))
                  "connected\nnumber of outgoing messages in the queue")))
          (if overleaf-track-changes
              (overleaf--mode-line-item " 󰑋" "track-changes: on")
