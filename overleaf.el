@@ -202,14 +202,11 @@ The following specification characters can be used:
 (defvar-local overleaf-auto-save nil
   "Whether to auto-save the buffer each time a change is synced.")
 
-
 (defvar-local overleaf-project-id nil
   "The overleaf project id.
 
 When having a project opened in the browser the URL should read
 \"https://[overleaf-domain]/project/[project-id]\".")
-
-
 
 (defvar-local overleaf-document-id nil
   "The overleaf document id as a string.
@@ -218,12 +215,8 @@ The id is most easily obtained by downloading the file that is to be
 edited from the overleaf interface.   The download URL will then be of the form
 \"https://[overleaf-domain]/project/[project-id]/doc/[document-id]\".")
 
-
-
 (defvar-local overleaf-track-changes nil
   "Whether or not to track changes in overleaf.")
-
-
 
 (defvar-local overleaf-url nil
   "The url of the overleaf server.")
@@ -242,7 +235,6 @@ edited from the overleaf interface.   The download URL will then be of the form
   (put 'overleaf-document-id 'safe-local-variable #'overleaf-id-p)
   ;; Do not ignore :propertize forms.  See variable `mode-line-format'.
   (put 'overleaf--mode-line 'risky-local-variable t))
-
 
 (defvar-local overleaf--is-overleaf-change nil
   "Is set to t if the current change in the buffer comes from overleaf.
@@ -581,7 +573,6 @@ BUFFER is the buffer value after applying the update."
                   (with-current-buffer overleaf--buffer
                     (overleaf--send-queued-message)
                     (overleaf--make-message-timer))))))))))))
-
 
 (defun overleaf--get-files (folder &optional parent)
   "Recursively parse overleafs FOLDER structure to list all documents.
