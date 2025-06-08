@@ -1267,14 +1267,15 @@ Stolen from `rainbow-identifiers.el'."
 (defun overleaf--row-col-to-pos (row column)
   "Translate ROW and COLUMN into a char position."
   (save-excursion
-    (let ((row (1+ row)))
-      (if (> row (count-lines (point-min) (point-max)))
-          nil
-        (goto-line row)
-        (let ((pos (+ (point) column)))
-          (if (> pos (point-max))
-              nil
-            pos))))))
+    (when row
+      (let ((row (1+ row)))
+        (if (> row (count-lines (point-min) (point-max)))
+            nil
+          (goto-line row)
+          (let ((pos (+ (point) column)))
+            (if (> pos (point-max))
+                nil
+              pos)))))))
 
 (defun overleaf--make-cursor-overlay (id name email row column)
   "Create a cursor overlay.
