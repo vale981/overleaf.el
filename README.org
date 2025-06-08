@@ -64,7 +64,7 @@ file:
             (overleaf-read-cookies-from-file cookie-file)))
 #+end_src
 
-**** Firefox
+*** Firefox
 Locate you Firefox profile folder and set:
 #+begin_src emacs-lisp
   (setq overleaf-cookies
@@ -75,7 +75,7 @@ This assumes that you're logged into overleaf in this Firefox profile.
 *It is recommended that no Firefox instance using this profile is running while
 =overleaf.el= is accessing the cookie database. The cookies usually tend to be evicted from the database while Firefox is running and will only be put back upon closure.*
 
-**** Manual
+*** Manual
 If the above doesn't work for you, simply open the overleaf document
 you want to edit and enable network monitoring. Select any request
 made to the overleaf domain and get the contents of the =Cookie= request
@@ -155,4 +155,4 @@ Feel free to open an issue providing this log.
 
 
 * To-do
-** TODO detect faulty document id
+** TODO work out edge case: receiving changes while still decoding doc
