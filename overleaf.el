@@ -566,7 +566,7 @@ BUFFER is the buffer value after applying the update."
                       (hash (plist-get (car (plist-get message :args)) :hash))
                       (overleaf--is-overleaf-change t)
                       (edits (when (plist-get message :args) (plist-get (car  (plist-get message :args)) :op))))
-                  (overleaf--debug "%S Got update with version %s->%s (buffer version %s) %S" (buffer-name) last-version version overleaf--doc-version message)
+                  (message "%S Got update with version %s->%s (buffer version %s) %S" (buffer-name) last-version version overleaf--doc-version message)
                   (overleaf--apply-changes edits version last-version hash)
                   (setq-local overleaf--receiving nil)
                   (overleaf--send-position-update)
@@ -628,11 +628,12 @@ overleaf version history."
 (defun overleaf--send-position-update ()
   "Send a position tracking update to overleaf."
   (with-current-buffer overleaf--buffer
-    (websocket-send-text
-     overleaf--websocket
-     (format
-      "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
-      (1- (line-number-at-pos)) (current-column) overleaf-document-id))))
+    (when (overleaf--connected-p)
+      (websocket-send-text
+       overleaf--websocket
+       (format
+        "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
+        (1- (line-number-at-pos)) (current-column) overleaf-document-id)))))
 
 (defun overleaf--send-queued-message (&optional buffer)
   "Send the next message in the message queue to overleaf.
