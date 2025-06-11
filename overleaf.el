@@ -56,6 +56,10 @@
   :get (lambda (name) (append (symbol-value name) nil))
   :set (lambda (name value) (set name (vconcat value))))
 
+(defcustom overleaf-cursor-gravatars nil
+  "Display gravatars at other users' cursor positions."
+  :type 'boolean)
+
 (defvar overleaf-cookies nil
   "The overleaf session cookies.
 
@@ -1238,6 +1242,8 @@ Stolen from `rainbow-identifiers.el'."
       (setq i (1+ i)))
     (aref overleaf-user-colors (mod result (length overleaf-user-colors)))))
 
+(defvar overleaf--gravatar-cache (make-hash-table :test #'equal))
+
 (defun overleaf--name-posframe-show (overlay)
   "Show a posframe showing the name corresponding to the OVERLAY."
   (when (and
@@ -1245,16 +1251,24 @@ Stolen from `rainbow-identifiers.el'."
          (equal overleaf--buffer (window-buffer))
          (< (window-start) (overlay-start overlay))
          (> (window-end) (overlay-start overlay)))
-    (posframe-show (format "*overleaf-name-posframe %s*" overleaf-document-id)
-                   :string (overlay-get overlay 'name)
-                   :timeout 1
-                   :foreground-color "white"
-                   :buffer overleaf--buffer
-                   :background-color (overlay-get overlay 'color)
-                   :position (save-excursion
-                               (goto-char (overlay-start overlay))
-                               (point)))))
-
+    (let* ((buf (format "*overleaf-name-posframe %s*" overleaf-document-id))
+           (text (overlay-get overlay 'name))
+           (email (overlay-get overlay 'email))
+           (gravatar (gethash email overleaf--gravatar-cache)))
+      (when (and overleaf-cursor-gravatars
+                 gravatar
+                 (not (eq gravatar 'error)))
+        (setq text (concat " " text))
+        (put-text-property 0 1 'display gravatar text))
+      (posframe-show buf
+                     :string text
+                     :timeout 1
+                     :foreground-color "white"
+                     :buffer overleaf--buffer
+                     :background-color (overlay-get overlay 'color)
+                     :position (save-excursion
+                                 (goto-char (overlay-start overlay))
+                                 (point))))))
 
 (defun overleaf--row-col-to-pos (row column)
   "Translate ROW and COLUMN into a char position."
@@ -1309,6 +1323,13 @@ The overlay stores the ID, the NAME, the EMAIL and is displayed
 at line ROW and char COLUMN."
   (with-current-buffer overleaf--buffer
     (unless (equal id overleaf--user-id)
+      (when (and overleaf-cursor-gravatars
+                 (not (gethash email overleaf--gravatar-cache)))
+        (gravatar-retrieve
+         email
+         (lambda (gravatar email)
+           (puthash email gravatar overleaf--gravatar-cache))
+         (list email)))
       (when-let* ((overlay
                    ;; recreating the overlay is necessary as otherwise the
                    ;; face properties won't be applied
