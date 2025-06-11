@@ -42,11 +42,19 @@
 
 ;;;; Variables
 
+(defgroup overleaf nil
+  "Sync and track changes live with overleaf."
+  :prefix "overleaf-"
+  :group 'tools)
+
 (defcustom overleaf-user-colors
   ["green" "red" "blue" "pink" "goldenrod"]
   "The colors used to display cursors and names."
-  :type 'array
-  :group 'overleaf)
+  :type '(repeat color)
+  ;; Customize UI cannot work with variable length vectors, so we need
+  ;; these conversion functions.
+  :get (lambda (name) (append (symbol-value name) nil))
+  :set (lambda (name value) (set name (vconcat value))))
 
 (defvar overleaf-cookies nil
   "The overleaf session cookies.
@@ -152,41 +160,34 @@ To be used with `overleaf-save-cookies'."
 
 (defcustom overleaf-default-url "https://www.overleaf.com"
   "The default url of the overleaf server."
-  :type 'string
-  :group 'overleaf-mode)
+  :type 'string)
 
 (defcustom overleaf-flush-interval .5
   "The idle-timer delay to flush the edit queue."
-  :type 'float
-  :group 'overleaf-mode)
+  :type 'float)
 
 (defcustom overleaf-message-interval .5
   "The interval for the timer that syncs changes to overleaf."
-  :type 'float
-  :group 'overleaf-mode)
+  :type 'float)
 
 (defcustom overleaf-debug nil
   "Whether to log debug messages."
-  :type 'boolean
-  :group 'overleaf-mode)
+  :type 'boolean)
 
 (defcustom overleaf-use-nerdfont nil
   "Whether to use nerd-font icons for the modeline."
-  :type 'boolean
-  :group 'overleaf-mode)
+  :type 'boolean)
 
 (defcustom overleaf-context-size 10
   "The standard context window size used to find the correct place to re-apply an edit."
-  :type 'integer
-  :group 'overleaf-mode)
+  :type 'integer)
 
 (defcustom overleaf-cache-cookies t
   "Whether to cache the cookies after obtaining them.
 
 This does nothing if `overleaf-read-cookies-from-firefox'
 or `overleaf-read-cookies-from-chromium' is used."
-  :type 'boolean
-  :group 'overleaf-mode)
+  :type 'boolean)
 
 (defcustom overleaf-user-info-template "%n\t%e\t%i"
   "The `format-spec' template used in `overleaf-list-users'.
@@ -226,8 +227,7 @@ edited from the overleaf interface.   The download URL will then be of the form
 (eval-and-compile
   (defcustom overleaf-keymap-prefix "C-c C-o"
     "The prefix for dotcrafter-mode key bindings."
-    :type 'string
-    :group 'overleaf-mode)
+    :type 'string)
   (put 'overleaf-auto-save 'safe-local-variable #'booleanp)
   (put 'overleaf-url 'safe-local-variable #'stringp)
   (put 'overleaf-track-changes 'safe-local-variable #'booleanp)
