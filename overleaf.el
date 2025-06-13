@@ -652,7 +652,7 @@ overleaf version history."
        overleaf--websocket
        (format
         "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
-        (1- (line-number-at-pos)) (current-column) overleaf-document-id)))))
+        (1- (line-number-at-pos)) (- (point) (line-beginning-position)) overleaf-document-id)))))
 
 (defun overleaf--apply-changes-internal (edits)
   "Parse the edit list EDITS and apply them to the buffer.
