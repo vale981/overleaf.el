@@ -379,14 +379,13 @@ The context window size is configured using `overleaf-context-size'."
        (cl-destructuring-bind (,context-before ,context-after ,context) (overleaf--extract-context-at-point)
          ,@body
          (goto-char ,pos)
-         (ignore-errors
-           (when (> ,pos 1)
-             (backward-char (1+ (length ,context-before))))
-           (if (search-forward ,context nil t)
-               (backward-char (length ,context-after))
-             (if (search-backward ,context nil t)
-                 (forward-char (length ,context-before))
-               (goto-char ,pos))))))))
+         (when (> ,pos 1)
+           (ignore-errors (backward-char (1+ (length ,context-before)))))
+         (if (search-forward ,context nil t)
+             (ignore-errors (backward-char (length ,context-after)))
+           (if (search-backward ,context nil t)
+               (ignore-errors (forward-char (length ,context-before)))
+             (goto-char ,pos)))))))
 
 ;;;; Communication
 
@@ -527,7 +526,6 @@ The context window size is configured using `overleaf-context-size'."
          (when message-raw
            (when-let* ((message (json-parse-string message-raw :object-type 'plist :array-type 'list))
                        (name (plist-get message :name)))
-
              (pcase name
                ("clientTracking.clientUpdated"
                 (let ((args (car (plist-get message :args))))
@@ -573,8 +571,7 @@ The context window size is configured using `overleaf-context-size'."
                ("serverPing"
                 (overleaf--debug "Received Ping -> PONG")
                 (let ((res (concat id ":::" (json-encode `(:name "clientPong" :args ,(plist-get message :args))))))
-                  (websocket-send-text ws res))
-                (overleaf--send-position-update))
+                  (websocket-send-text ws res)))
                ("otUpdateApplied"
                 (let ((last-version (plist-get (car (plist-get message :args)) :lastV))
                       (version (plist-get (car (plist-get message :args)) :v))
@@ -582,8 +579,8 @@ The context window size is configured using `overleaf-context-size'."
                       (overleaf--is-overleaf-change t)
                       (edits (when (plist-get message :args) (plist-get (car  (plist-get message :args)) :op))))
                   (overleaf--debug "%S Got update with version %s->%s (buffer version %s) %S" (buffer-name) last-version version overleaf--doc-version message)
-                  (overleaf--apply-changes edits version last-version hash)
-                  (overleaf--send-position-update)))))))))
+                  (overleaf--apply-changes edits version last-version hash))
+                (overleaf--send-position-update))))))))
     (setq-local overleaf--receiving nil)))
 
 (defun overleaf--get-files (folder &optional parent)
@@ -1113,6 +1110,7 @@ Mainly used to detect switchover between deletion and insertion."
     (let ((overleaf--buffer buffer))
       (with-current-buffer buffer
         (overleaf-queue-current-change)
+        (overleaf--send-position-update)
         (when (and overleaf--websocket (websocket-openp overleaf--websocket) overleaf--edit-queue)
           (let ((buf-string (buffer-substring-no-properties (point-min) (point-max)))
                 (next-version (1+ overleaf--doc-version))
