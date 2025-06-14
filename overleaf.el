@@ -841,6 +841,7 @@ PADDING (2 characters by default)."
       (add-file-local-variable 'overleaf-track-changes track-changes)
       (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
       (add-file-local-variable 'overleaf-url overleaf-url)
+      (overleaf--flush-edit-queue (current-buffer))
       (setq-local overleaf-track-changes track-changes)
       (goto-char pos))))
 
