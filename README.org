@@ -156,3 +156,4 @@ Feel free to open an issue providing this log.
 
 * To-do
 ** TODO work out edge case: receiving changes while still decoding doc
+** TODO store project and document names in buffer-locals

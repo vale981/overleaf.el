@@ -37,6 +37,7 @@
 (require 'websocket)
 (require 'plz)
 (require 'posframe)
+(require 'xref)
 
 ;;; Code:
 
@@ -722,7 +723,7 @@ Re-connect if this is not the case."
 If there are some updates to the buffer that haven't yet been
 acknowledged by overleaf or even haven't yet been sent we have to replay
 them on top of the changes received from overleaf in the meantime."
-  (overleaf--debug "VERSION: %S -> %S Current: %S Edits: %S In flight: %S" last-version version overleaf--doc-version edits (not (not overleaf--edits-in-flight)))
+  (overleaf--debug "VERSION: %S -> %S Current: %S Edits: %S In flight: %S" last-version version overleaf--doc-version edits overleaf--edits-in-flight)
   (overleaf-queue-current-change)
   (let ((overleaf--is-overleaf-change t))
     (if (and overleaf--edits-in-flight (not edits))
@@ -1354,25 +1355,56 @@ Format these according to `overleaf-user-info-template'."
                            ""))))
    'face `(:foreground ,(overlay-get overlay 'color))))
 
+(cl-defstruct (xref-overleaf-location
+               (:constructor xref-make-overleaf-location (buffer position)))
+  buffer position)
+
+(cl-defmethod xref-location-line ((l xref-overleaf-location))
+  "Return the line number corresponding to the location L."
+  (pcase-let (((cl-struct xref-buffer-location buffer position) l))
+    (with-current-buffer buffer
+      (save-excursion
+        (goto-char position)
+        (current-line)))))
+
+
+(cl-defmethod xref-location-marker ((l xref-overleaf-location))
+  "Make a marker at the location L."
+  (pcase-let (((cl-struct xref-overleaf-location buffer position) l))
+    (let ((m (make-marker)))
+      (move-marker m position buffer))))
+
+(cl-defmethod xref-location-group ((l xref-overleaf-location))
+  "Get the group of the location L."
+  (pcase-let (((cl-struct xref-overleaf-location buffer) l))
+    (with-current-buffer buffer
+      (format "%s (%s)"
+              (or (buffer-file-name buffer)
+                  (format "(buffer %s)" (buffer-name buffer)))
+              overleaf-document-id))))
+
+
 (defun overleaf-list-users ()
   "List other users' cursor positions in an xref buffer.
 See variable `overleaf-user-info-template' for customization."
   (interactive)
-  (let* ((buff (current-buffer)) ;; Save it to make 'g' work in *xref* buffer.
-         (xref-fn
+  (let* ((xref-fn
           (lambda ()
-            (with-current-buffer buff
-              (let ((xrefs))
-                (maphash
-                 (lambda (id overlay)
-                   (cl-pushnew
-                    (xref-make
-                     (overleaf--format-user-info id overlay)
-                     (xref-make-buffer-location (overlay-buffer overlay)
-                                                (overlay-start overlay)))
-                    xrefs))
-                 overleaf--user-positions)
-                xrefs)))))
+            (let ((xrefs))
+              (maphash (lambda (_ buff)
+                         (message "%S" buff)
+                         (with-current-buffer buff
+                           (maphash
+                            (lambda (id overlay)
+                              (cl-pushnew
+                               (xref-make
+                                (overleaf--format-user-info id overlay)
+                                (xref-make-overleaf-location (overlay-buffer overlay)
+                                                             (overlay-start overlay)))
+                               xrefs))
+                            overleaf--user-positions)))
+                       overleaf--ws-url->buffer-table)
+              xrefs))))
     (if (overleaf--other-users-p)
         (xref-show-xrefs xref-fn nil)
       (overleaf--message "No other users edit this document."))))
