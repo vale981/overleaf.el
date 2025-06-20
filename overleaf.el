@@ -1365,7 +1365,7 @@ Format these according to `overleaf-user-info-template'."
     (with-current-buffer buffer
       (save-excursion
         (goto-char position)
-        (current-line)))))
+        (line-number-at-pos nil t)))))
 
 
 (cl-defmethod xref-location-marker ((l xref-overleaf-location))
