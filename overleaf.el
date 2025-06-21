@@ -201,6 +201,11 @@ The following specification characters can be used:
   :type 'string
   :group 'overleaf-mode)
 
+(defcustom overleaf-webdriver-init-function #'overleaf--webdriver-make-session
+  "Function called to create a webdriver session."
+  :type 'function
+  :group 'overleaf-mode)
+
 (defvar-local overleaf-auto-save nil
   "Whether to auto-save the buffer each time a change is synced.")
 
@@ -963,6 +968,8 @@ The element is then bound to ELEMENT-SYM and the BODY is executed."
            `(:name ,(string-trim name) :value ,(string-trim value) :domain
                    ,cookie-domain)))))))
 
+(defun overleaf--webdriver-make-session ()
+  (make-instance 'webdriver-session))
 
 ;;;; Change Detection
 
@@ -1453,7 +1460,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
      (user-error "Both overleaf-cookies and overleaf-save-cookies need to be set"))
 
    (setq-local overleaf-url url)
-   (let ((session (make-instance 'webdriver-session)))
+   (let ((session (overleaf--webdriver-make-session)))
      (unwind-protect
          (let ((full-cookies (overleaf--get-full-cookies)))
            (webdriver-session-start session)
