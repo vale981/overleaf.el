@@ -226,9 +226,6 @@ edited from the overleaf interface.   The download URL will then be of the form
 
 ;;;###autoload
 (eval-and-compile
-  (defcustom overleaf-keymap-prefix "C-c C-o"
-    "The prefix for dotcrafter-mode key bindings."
-    :type 'string)
   (put 'overleaf-auto-save 'safe-local-variable #'booleanp)
   (put 'overleaf-url 'safe-local-variable #'stringp)
   (put 'overleaf-track-changes 'safe-local-variable #'booleanp)
@@ -1679,10 +1676,28 @@ to the default tooltip text."
   (overleaf--update-modeline)
   (setq inhibit-modification-hooks nil))
 
+(defcustom overleaf-keymap-prefix "C-c C-o"
+  "Prefix key for `overleaf-command-map' inside `overleaf-mode'."
+  :type 'key
+  :initialize 'custom-initialize-default
+  :set (lambda (sym val)
+         (defvar overleaf-mode-map) (defvar overleaf-command-map)
+         (keymap-unset overleaf-mode-map (symbol-value sym))
+         (keymap-set overleaf-mode-map val overleaf-command-map)
+         (set-default sym val)))
 
-(defmacro overleaf--key (key function)
-  "Define a mapping of KEY to FUNCTION with the appropriate prefix."
-  `(cons (kbd ,(concat overleaf-keymap-prefix " " key))  #',function))
+(defvar-keymap overleaf-command-map
+  "c" #'overleaf-connect
+  "d" #'overleaf-disconnect
+  "t" #'overleaf-toggle-track-changes
+  "s" #'overleaf-toggle-auto-save
+  "b" #'overleaf-browse-project
+  "g" #'overleaf-goto-cursor
+  "l" #'overleaf-list-users)
+
+(defvar-keymap overleaf-mode-map
+  :doc "Minor-mode map for `overleaf-mode'."
+  overleaf-keymap-prefix overleaf-command-map)
 
 ;;;###autoload
 (define-minor-mode overleaf-mode
@@ -1691,15 +1706,7 @@ Interactively with no argument, this command toggles the mode."
 
   :init-value nil
   :lighter nil ; Use `overleaf--mode-line' instead.
-  :keymap
-  (list
-   (overleaf--key "c" overleaf-connect)
-   (overleaf--key "d" overleaf-disconnect)
-   (overleaf--key "t" overleaf-toggle-track-changes)
-   (overleaf--key "s" overleaf-toggle-auto-save)
-   (overleaf--key "b" overleaf-browse-project)
-   (overleaf--key "g" overleaf-goto-cursor)
-   (overleaf--key "l" overleaf-list-users))
+  :keymap overleaf-mode-map
 
   (if overleaf-mode
       (overleaf--init)
