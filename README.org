@@ -102,7 +102,7 @@ project and file to connect to if the buffer has never been connected to overlea
 If you want to reconnect the same buffer forcibly to another overleaf document, use ~overleaf-find-file~.
 
 If this buffer hasn't been associated
-with an overleaf connection before (i.e.  there are two ways to obtain
+with an overleaf connection before (i.e.
 the ~document-id~ and ~project-id~ aren't set), use ~M-x overleaf-find-file~
 to select a project and file.
 
