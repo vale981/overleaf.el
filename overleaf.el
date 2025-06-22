@@ -74,6 +74,15 @@ cookies from a gpg encrypted file.  See
 The cookies are most easily obtained from the developer tools in the
 browser.")
 
+(defun overleaf--buffer-string (&optional start end)
+  "Return the buffer contents between START and END with no text properties.
+If START and END are nil, return the whole buffer.
+Widen the buffer before extracting the contents."
+  (save-restriction
+    (widen)
+    (buffer-substring-no-properties
+     (or start (point-min))
+     (or end (point-max)))))
 
 ;;;###autoload
 (defun overleaf-read-cookies-from-file (file)
@@ -376,14 +385,16 @@ The context window size is configured using `overleaf-context-size'."
     `(let ((,pos (point)))
        (cl-destructuring-bind (,context-before ,context-after ,context) (overleaf--extract-context-at-point)
          ,@body
-         (goto-char ,pos)
-         (when (> ,pos 1)
-           (ignore-errors (backward-char (1+ (length ,context-before)))))
-         (if (search-forward ,context nil t)
-             (ignore-errors (backward-char (length ,context-after)))
-           (if (search-backward ,context nil t)
-               (ignore-errors (forward-char (length ,context-before)))
-             (goto-char ,pos)))))))
+         (save-restriction
+           (widen)
+           (goto-char ,pos)
+           (when (> ,pos 1)
+             (ignore-errors (backward-char (1+ (length ,context-before)))))
+           (if (search-forward ,context nil t)
+               (ignore-errors (backward-char (length ,context-after)))
+             (if (search-backward ,context nil t)
+                 (ignore-errors (forward-char (length ,context-before)))
+               (goto-char ,pos))))))))
 
 ;;;; Communication
 
@@ -497,7 +508,7 @@ The context window size is configured using `overleaf-context-size'."
                        (overleaf--is-overleaf-change t))
              (when doc
                (let ((hash (and (not (buffer-modified-p))
-                                (buffer-hash))))
+                                (save-restriction (widen) (buffer-hash)))))
                  (setq-local buffer-read-only nil)
                  (overleaf--reset-buffer-to
                   (overleaf--decode-utf8 (string-join (json-parse-string doc) "\n")))
@@ -511,7 +522,7 @@ The context window size is configured using `overleaf-context-size'."
                  ;; was previously unmodified), then flip the modification status
                  ;; back to "unchanged".
                  (when (and hash
-                            (equal hash (buffer-hash)))
+                            (equal hash (save-restriction (widen) (buffer-hash))))
                    (set-buffer-modified-p nil))))
              (run-with-idle-timer
               1 nil
@@ -607,10 +618,8 @@ Optionally a PARENT prefix string may be provided."
 (defun overleaf--get-hash ()
   "Get the hash of the overleaf buffer."
   (with-current-buffer overleaf--buffer
-    (save-restriction
-      (widen)
-      (let ((buff (buffer-string)))
-        (secure-hash 'sha1 (format "blob %i\x00%s" (length buff) buff))))))
+    (let ((buff (overleaf--buffer-string)))
+      (secure-hash 'sha1 (format "blob %i\x00%s" (length buff) buff)))))
 
 (defun overleaf--push-to-history (version &optional buffer-string)
   "Push the buffer to the version history.
@@ -620,7 +629,7 @@ overleaf version history."
     (with-current-buffer overleaf--buffer
       (setq-local overleaf--history
                   (overleaf--splice-into overleaf--history version
-                                         (or buffer-string (buffer-string)) t))
+                                         (or buffer-string (overleaf--buffer-string)) t))
       (setq-local overleaf--history
                   (overleaf--truncate
                    overleaf--history
@@ -646,11 +655,13 @@ overleaf version history."
   "Send a position tracking update to overleaf."
   (with-current-buffer overleaf--buffer
     (when (overleaf--connected-p)
-      (websocket-send-text
-       overleaf--websocket
-       (format
-        "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
-        (1- (line-number-at-pos)) (- (point) (line-beginning-position)) overleaf-document-id)))))
+      (save-restriction
+        (widen)
+        (websocket-send-text
+         overleaf--websocket
+         (format
+          "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
+          (1- (line-number-at-pos)) (- (point) (line-beginning-position)) overleaf-document-id))))))
 
 (defun overleaf--apply-changes-internal (edits)
   "Parse the edit list EDITS and apply them to the buffer.
@@ -660,24 +671,26 @@ no longer be possible, or will occur at a different location.  If CONTEXT
 is provided use the context to fine tune where the edit is applied."
   (let ((overleaf--is-overleaf-change t)
         (new-edits nil))
-    (dolist (op edits)
-      (let ((pos (1+ (plist-get op :p))))
-        (goto-char pos)
-        (if-let* ((insert (plist-get op :i)))
-            (progn
-              (insert insert)
-              (setq buffer-undo-list (memq nil buffer-undo-list))
-              (push `(:p ,(1- pos) :i ,insert) new-edits))
+    (save-restriction
+      (widen)
+      (dolist (op edits)
+        (let ((pos (1+ (plist-get op :p))))
+          (goto-char pos)
+          (if-let* ((insert (plist-get op :i)))
+              (progn
+                (insert insert)
+                (setq buffer-undo-list (memq nil buffer-undo-list))
+                (push `(:p ,(1- pos) :i ,insert) new-edits))
 
-          (if-let* ((delete (plist-get op :d)))
-              (save-match-data
-                (if (re-search-forward (regexp-quote delete) nil t)
-                    (progn
-                      (let ((delete-loc (1- (- (point) (length delete)))))
-                        (replace-match "")
-                        (setq buffer-undo-list (memq nil buffer-undo-list))
-                        (push `(:p ,delete-loc :d ,delete) new-edits)))
-                  (setq edits nil)))))))
+            (if-let* ((delete (plist-get op :d)))
+                (save-match-data
+                  (if (re-search-forward (regexp-quote delete) nil t)
+                      (progn
+                        (let ((delete-loc (1- (- (point) (length delete)))))
+                          (replace-match "")
+                          (setq buffer-undo-list (memq nil buffer-undo-list))
+                          (push `(:p ,delete-loc :d ,delete) new-edits)))
+                    (setq edits nil))))))))
     (nreverse new-edits)))
 
 (defun overleaf--verify-buffer (hash)
@@ -686,7 +699,7 @@ Re-connect if this is not the case."
   (overleaf--debug "Verify")
   (when (and hash
              (not (string= (overleaf--get-hash) hash)))
-    (overleaf--debug "%s" (buffer-string))
+    (overleaf--debug "%s" (overleaf--buffer-string))
     (overleaf--warn "Hash mismatch... reconnecting")
     (setq-local buffer-read-only t)
     (overleaf-connect)))
@@ -730,7 +743,7 @@ them on top of the changes received from overleaf in the meantime."
             (setf (overleaf--update-to-version update) version)
             (overleaf--push-to-recent-updates
              update)
-            (overleaf--push-to-history version (buffer-string))
+            (overleaf--push-to-history version (overleaf--buffer-string))
             (setf (overleaf--update-to-version update) version)
             (setf (overleaf--update-from-version update) (1- version))
             (overleaf--push-to-recent-updates update)
@@ -763,7 +776,7 @@ them on top of the changes received from overleaf in the meantime."
                (progn
                  (when edits
                    (setq overleaf--edit-queue (overleaf--transform-edits overleaf--edit-queue edits)))
-                 (setq overleaf--buffer-before-edit-queue (buffer-string))
+                 (setq overleaf--buffer-before-edit-queue (overleaf--buffer-string))
                  (setq overleaf--edit-queue (overleaf--apply-changes-internal overleaf--edit-queue)))
              (overleaf--reset-edit-queue))))))
 
@@ -830,18 +843,18 @@ PADDING (2 characters by default)."
 (defun overleaf--write-buffer-variables ()
   "Write the current buffer-local variables to the buffer."
   (when (overleaf--connected-p)
-    (let ((pos (point))
-          (overleaf--is-overleaf-change nil)
+    (let ((overleaf--is-overleaf-change nil)
           (track-changes overleaf-track-changes))
-      (setq-local overleaf-track-changes nil)
-      (add-file-local-variable 'overleaf-document-id overleaf-document-id)
-      (add-file-local-variable 'overleaf-project-id overleaf-project-id)
-      (add-file-local-variable 'overleaf-track-changes track-changes)
-      (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
-      (add-file-local-variable 'overleaf-url overleaf-url)
+      (save-excursion
+        (save-restriction
+          (setq-local overleaf-track-changes nil)
+          (add-file-local-variable 'overleaf-document-id overleaf-document-id)
+          (add-file-local-variable 'overleaf-project-id overleaf-project-id)
+          (add-file-local-variable 'overleaf-track-changes track-changes)
+          (add-file-local-variable 'overleaf-auto-save overleaf-auto-save)
+          (add-file-local-variable 'overleaf-url overleaf-url)))
       (overleaf--flush-edit-queue (current-buffer))
-      (setq-local overleaf-track-changes track-changes)
-      (goto-char pos))))
+      (setq-local overleaf-track-changes track-changes))))
 
 (defun overleaf--save-buffer ()
   "Safely save the buffer."
@@ -894,8 +907,8 @@ Version: 2024-04-03"
   "Return context `(before after total)' of length LENGTH around the point."
   (let* ((length (or length overleaf-context-size))
          (pos (point))
-         (context-before (buffer-substring-no-properties (max 1 (- pos 10)) pos))
-         (context-after (buffer-substring-no-properties pos (min (point-max) (+ pos 10))))
+         (context-before (overleaf--buffer-string (max 1 (- pos 10)) pos))
+         (context-after (overleaf--buffer-string pos (min (point-max) (+ pos 10))))
          (context (concat context-before context-after)))
     (overleaf--debug "using context: %S %S %S" context-before context-after context)
     (list context-before context-after context)))
@@ -903,8 +916,10 @@ Version: 2024-04-03"
 (defun overleaf--reset-buffer-to (contents)
   "Erase the buffer and insert CONTENTS while trying to keep the point position."
   (overleaf--save-context
-   (erase-buffer)
-   (insert contents)))
+   (save-restriction
+     (widen)
+     (erase-buffer)
+     (insert contents))))
 
 ;;;; Logging
 (defsubst overleaf--debug (format-string &rest args)
@@ -982,7 +997,7 @@ overleaf."
     (unless overleaf--is-overleaf-change
       (if overleaf--receiving
           (overleaf--reset-buffer-to overleaf--buffer-before-change)
-        (let ((new (buffer-substring-no-properties begin end)))
+        (let ((new (overleaf--buffer-string begin end)))
           ;; the before change hook tends to lie about the end of the region
           (setq overleaf--before-change (substring overleaf--before-change 0 length))
           (setq overleaf--before-change-end (+ overleaf--before-change-begin length))
@@ -1045,7 +1060,7 @@ overleaf."
                (t
                 (overleaf--debug "====> Complicated Change")
                 (overleaf--debug "====> Restored previous version... replaying")
-                (overleaf--debug "====> Deleting %s" (buffer-substring-no-properties begin end))
+                (overleaf--debug "====> Deleting %s" (overleaf--buffer-string begin end))
                 (let ((overleaf--is-overleaf-change t))
                   (delete-region begin end))
                 (setq-local overleaf--last-change-begin overleaf--before-change-begin)
@@ -1054,7 +1069,7 @@ overleaf."
                 (setq-local overleaf--deletion-buffer overleaf--before-change)
                 (overleaf--debug "====> Claiming to have deleted %s" overleaf--before-change)
                 (when (< end (point-max))
-                  (overleaf--debug "====> buffer is now %s" (buffer-substring-no-properties begin end)))
+                  (overleaf--debug "====> buffer is now %s" (overleaf--buffer-string begin end)))
 
                 (overleaf-queue-current-change)
                 (goto-char overleaf--before-change-begin)
@@ -1073,9 +1088,9 @@ Mainly used to detect switchover between deletion and insertion."
   (unless overleaf--is-overleaf-change
     (let ((overleaf--buffer (current-buffer)))
       (if overleaf--receiving
-          (setq overleaf--buffer-before-change (buffer-string))
+          (setq overleaf--buffer-before-change (overleaf--buffer-string))
         (overleaf--debug "before (%i %i) (%i %i)" begin end overleaf--last-change-begin overleaf--last-change-end)
-        (setq-local overleaf--before-change (buffer-substring-no-properties begin end))
+        (setq-local overleaf--before-change (overleaf--buffer-string begin end))
         (setq-local overleaf--before-change-begin begin)
         (setq-local overleaf--before-change-end end)
         (unless overleaf--change-context
@@ -1099,7 +1114,7 @@ Mainly used to detect switchover between deletion and insertion."
 
 (defun overleaf--reset-edit-queue ()
   "Empty the edit queue and reset buffer to before the edit queue."
-  (setq-local overleaf--buffer-before-edit-queue (buffer-string))
+  (setq-local overleaf--buffer-before-edit-queue (overleaf--buffer-string))
   (setq overleaf--edit-queue '())
   (setq overleaf--change-context nil))
 
@@ -1111,7 +1126,7 @@ Mainly used to detect switchover between deletion and insertion."
         (overleaf-queue-current-change)
         (overleaf--send-position-update)
         (when (and overleaf--websocket (websocket-openp overleaf--websocket) overleaf--edit-queue)
-          (let ((buf-string (buffer-substring-no-properties (point-min) (point-max)))
+          (let ((buf-string (overleaf--buffer-string (point-min) (point-max)))
                 (next-version (1+ overleaf--doc-version))
                 (edits (mapcar #'copy-sequence overleaf--edit-queue))
                 (hash (overleaf--get-hash)))
@@ -1165,7 +1180,7 @@ Mainly used to detect switchover between deletion and insertion."
               `(:p ,(- overleaf--last-change-begin 1) :d ,overleaf--deletion-buffer)))
             (:i
              (overleaf--queue-edit
-              `(:p ,(- overleaf--last-change-begin 1) :i ,(buffer-substring-no-properties overleaf--last-change-begin overleaf--last-change-end)))))
+              `(:p ,(- overleaf--last-change-begin 1) :i ,(overleaf--buffer-string overleaf--last-change-begin overleaf--last-change-end)))))
           (setq-local overleaf--last-change-type nil)
           (setq-local overleaf--last-change-begin -1)
           (setq-local overleaf--last-change-end -1)
@@ -1228,15 +1243,17 @@ Stolen from `rainbow-identifiers.el'."
 (defun overleaf--row-col-to-pos (row column)
   "Translate ROW and COLUMN into a char position."
   (save-excursion
-    (when row
-      (let ((row (1+ row)))
-        (if (> row (count-lines (point-min) (point-max)))
-            nil
-          (goto-line row)
-          (let ((pos (+ (point) column)))
-            (if (> pos (point-max))
-                nil
-              pos)))))))
+    (save-restriction
+      (widen)
+      (when row
+        (let ((row (1+ row)))
+          (if (> row (count-lines (point-min) (point-max)))
+              nil
+            (goto-line row)
+            (let ((pos (+ (point) column)))
+              (if (> pos (point-max))
+                  nil
+                pos))))))))
 
 (defun overleaf--make-cursor-overlay (id name email row column)
   "Create a cursor overlay.
@@ -1347,8 +1364,10 @@ Format these according to `overleaf-user-info-template'."
                   (?w . ,(if which-function-mode
                              (with-current-buffer (overlay-buffer overlay)
                                (save-excursion
-                                 (goto-char (overlay-start overlay))
-                                 (or (which-function) "")))
+                                 (save-restriction
+                                   (widen)
+                                   (goto-char (overlay-start overlay))
+                                   (or (which-function) ""))))
                            ""))))
    'face `(:foreground ,(overlay-get overlay 'color))))
 
@@ -1361,8 +1380,10 @@ Format these according to `overleaf-user-info-template'."
   (pcase-let (((cl-struct xref-buffer-location buffer position) l))
     (with-current-buffer buffer
       (save-excursion
-        (goto-char position)
-        (line-number-at-pos nil t)))))
+        (save-restriction
+          (widen)
+          (goto-char position)
+          (line-number-at-pos nil t))))))
 
 
 (cl-defmethod xref-location-marker ((l xref-overleaf-location))
