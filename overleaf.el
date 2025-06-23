@@ -1697,7 +1697,7 @@ to the default tooltip text."
   (overleaf--update-modeline)
   (setq inhibit-modification-hooks nil))
 
-(defcustom overleaf-keymap-prefix "C-c C-o"
+(defcustom overleaf-keymap-prefix "C-c #"
   "Prefix key for `overleaf-command-map' inside `overleaf-mode'."
   :type 'key
   :initialize 'custom-initialize-default
