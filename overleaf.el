@@ -1513,8 +1513,8 @@ Optionally prompt for the overleaf server URL."
    (list
     (read-string "Overleaf URL: " (overleaf--url))))
 
-  ;; for mm-url-decode
-  (require 'gnus)
+  (require 'mm-url)
+  (declare-function mm-url-decode-entities-string "mm-url")
   (overleaf-disconnect)
   (setq-local overleaf-url url)
   (setq-local overleaf-project-id nil)
