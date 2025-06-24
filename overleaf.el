@@ -1709,6 +1709,7 @@ to the default tooltip text."
   "t" #'overleaf-toggle-track-changes
   "s" #'overleaf-toggle-auto-save
   "b" #'overleaf-browse-project
+  "f" #'overleaf-find-file
   "g" #'overleaf-goto-cursor
   "l" #'overleaf-list-users)
 

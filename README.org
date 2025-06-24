@@ -153,6 +153,7 @@ The available keybindings are then:
   - =[prefix] t= - toggle track-changes
   - =[prefix] s= - toggle auto-save
   - =[prefix] b= - browse project
+  - =[prefix] f= - find file
   - =[prefix] g= - go to the cursor of another user
   - =[prefix] l= - list users' cursor positions in an xref buffer
 
