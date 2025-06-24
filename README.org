@@ -131,9 +131,23 @@ If you have a font with nerd-font symbol support you can set:
 
 
 ** Keybindings
-The keymap prefix can be customized with ~overleaf-keymap-prefix~ which defaults to ~C-c C-o~.
+To make Overleaf keybindings available in LaTeX buffers, bind a key to ~overleaf-command-map~, like so:
 
-The available keybindings
+- For the built-in ~tex-mode~:
+
+#+begin_src elisp
+(with-eval-after-load 'tex-mode
+  (keymap-set latex-mode-map "C-c o" overleaf-command-map))
+#+end_src
+
+- For [[https://www.gnu.org/software/auctex/manual/auctex/Installation.html#Installation][AUCTeX]]:
+
+#+begin_src elisp
+(with-eval-after-load 'latex
+  (keymap-set LaTeX-mode-map "C-c o" overleaf-command-map))
+#+end_src
+
+The available keybindings are then:
   - =[prefix] c= - (re)-connect
   - =[prefix] d= - disconnect
   - =[prefix] t= - toggle track-changes
