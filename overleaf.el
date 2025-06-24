@@ -998,9 +998,6 @@ overleaf."
       (if overleaf--receiving
           (overleaf--reset-buffer-to overleaf--buffer-before-change)
         (let ((new (overleaf--buffer-string begin end)))
-          ;; the before change hook tends to lie about the end of the region
-          (setq overleaf--before-change (substring overleaf--before-change 0 length))
-          (setq overleaf--before-change-end (+ overleaf--before-change-begin length))
 
           (unless overleaf--change-context
             (save-excursion
@@ -1058,28 +1055,23 @@ overleaf."
                   (setq overleaf--last-change-end end))
                 (setq-local overleaf--last-change-begin overleaf--before-change-begin))
                (t
-                (overleaf--debug "====> Complicated Change")
-                (overleaf--debug "====> Restored previous version... replaying")
-                (overleaf--debug "====> Deleting %s" (overleaf--buffer-string begin end))
-                (let ((overleaf--is-overleaf-change t))
-                  (delete-region begin end))
-                (setq-local overleaf--last-change-begin overleaf--before-change-begin)
-                (setq-local overleaf--last-change-end (+ overleaf--before-change-begin length))
-                (setq-local overleaf--last-change-type :d)
-                (setq-local overleaf--deletion-buffer overleaf--before-change)
-                (overleaf--debug "====> Claiming to have deleted %s" overleaf--before-change)
-                (when (< end (point-max))
-                  (overleaf--debug "====> buffer is now %s" (overleaf--buffer-string begin end)))
-
-                (overleaf-queue-current-change)
-                (goto-char overleaf--before-change-begin)
-                (setq-local overleaf--last-change-begin begin)
-                (setq-local overleaf--last-change-end end)
-                (setq-local overleaf--last-change-type :i)
-                (overleaf--debug "====> Inserting %s" new)
-                (let ((overleaf--is-overleaf-change t))
-                  (insert new))
-                (overleaf-queue-current-change))))))))))
+                (let* ((old overleaf--before-change)
+                       (final (let* ((kept-length (- (length old) length))
+                                     (new-length (- end begin))
+                                     (final-length (+ kept-length new-length))
+                                     (final-begin overleaf--before-change-begin)
+                                     (final-end (+ final-begin final-length)))
+                                (overleaf--buffer-string final-begin final-end))))
+                  (overleaf--debug "====> Complicated Change (Replacement): Deleting '%s', Inserting '%s'"
+                                   old final)
+                  (overleaf--queue-edit
+                   `(:p ,(- overleaf--before-change-begin 1) :d ,old))
+                  (overleaf--queue-edit
+                   `(:p ,(- overleaf--before-change-begin 1) :i ,final))
+                  (setq-local overleaf--last-change-type nil)
+                  (setq-local overleaf--last-change-begin -1)
+                  (setq-local overleaf--last-change-end -1)
+                  (setq-local overleaf--deletion-buffer "")))))))))))
 
 (defun overleaf--before-change-function (begin end)
   "Change hook called to signal an impending change between BEGIN and END.
