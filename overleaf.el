@@ -1697,16 +1697,12 @@ to the default tooltip text."
   (overleaf--update-modeline)
   (setq inhibit-modification-hooks nil))
 
-(defcustom overleaf-keymap-prefix "C-c #"
-  "Prefix key for `overleaf-command-map' inside `overleaf-mode'."
-  :type 'key
-  :initialize 'custom-initialize-default
-  :set (lambda (sym val)
-         (defvar overleaf-mode-map) (defvar overleaf-command-map)
-         (keymap-unset overleaf-mode-map (symbol-value sym))
-         (keymap-set overleaf-mode-map val overleaf-command-map)
-         (set-default sym val)))
+;;;###autoload
+(make-obsolete-variable 'overleaf-keymap-prefix
+                        "bind `overleaf-command-map' directly (see README)."
+                        "1.1.4")
 
+;;;###autoload
 (defvar-keymap overleaf-command-map
   "c" #'overleaf-connect
   "d" #'overleaf-disconnect
@@ -1716,10 +1712,6 @@ to the default tooltip text."
   "g" #'overleaf-goto-cursor
   "l" #'overleaf-list-users)
 
-(defvar-keymap overleaf-mode-map
-  :doc "Minor-mode map for `overleaf-mode'."
-  overleaf-keymap-prefix overleaf-command-map)
-
 ;;;###autoload
 (define-minor-mode overleaf-mode
   "Toggle Overleaf Connection mode.
@@ -1727,7 +1719,6 @@ Interactively with no argument, this command toggles the mode."
 
   :init-value nil
   :lighter nil ; Use `overleaf--mode-line' instead.
-  :keymap overleaf-mode-map
 
   (if overleaf-mode
       (overleaf--init)
