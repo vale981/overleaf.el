@@ -1067,11 +1067,7 @@ overleaf."
                   (overleaf--queue-edit
                    `(:p ,(- overleaf--before-change-begin 1) :d ,old))
                   (overleaf--queue-edit
-                   `(:p ,(- overleaf--before-change-begin 1) :i ,final))
-                  (setq-local overleaf--last-change-type nil)
-                  (setq-local overleaf--last-change-begin -1)
-                  (setq-local overleaf--last-change-end -1)
-                  (setq-local overleaf--deletion-buffer "")))))))))))
+                   `(:p ,(- overleaf--before-change-begin 1) :i ,final))))))))))))
 
 (defun overleaf--before-change-function (begin end)
   "Change hook called to signal an impending change between BEGIN and END.
@@ -1157,7 +1153,11 @@ Mainly used to detect switchover between deletion and insertion."
 (defun overleaf--queue-edit (edit)
   "Add EDIT to the edit queue."
   (overleaf--debug "====> adding %s to queue" edit)
-  (setq overleaf--edit-queue (nconc overleaf--edit-queue (list edit))))
+  (setq overleaf--edit-queue (nconc overleaf--edit-queue (list edit)))
+  (setq-local overleaf--last-change-type nil)
+  (setq-local overleaf--last-change-begin -1)
+  (setq-local overleaf--last-change-end -1)
+  (setq-local overleaf--deletion-buffer ""))
 
 (defun overleaf-queue-current-change (&optional buffer)
   "Queue the change to BUFFER currently being built."
@@ -1172,11 +1172,7 @@ Mainly used to detect switchover between deletion and insertion."
               `(:p ,(- overleaf--last-change-begin 1) :d ,overleaf--deletion-buffer)))
             (:i
              (overleaf--queue-edit
-              `(:p ,(- overleaf--last-change-begin 1) :i ,(overleaf--buffer-string overleaf--last-change-begin overleaf--last-change-end)))))
-          (setq-local overleaf--last-change-type nil)
-          (setq-local overleaf--last-change-begin -1)
-          (setq-local overleaf--last-change-end -1)
-          (setq-local overleaf--deletion-buffer ""))))))
+              `(:p ,(- overleaf--last-change-begin 1) :i ,(overleaf--buffer-string overleaf--last-change-begin overleaf--last-change-end))))))))))
 
 ;;;; Cursors
 (cl-defstruct overleaf--user-data
