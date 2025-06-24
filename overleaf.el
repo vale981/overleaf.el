@@ -734,7 +734,7 @@ If there are some updates to the buffer that haven't yet been
 acknowledged by overleaf or even haven't yet been sent we have to replay
 them on top of the changes received from overleaf in the meantime."
   (overleaf--debug "VERSION: %S -> %S Current: %S Edits: %S In flight: %S" last-version version overleaf--doc-version edits overleaf--edits-in-flight)
-  (overleaf-queue-current-change)
+  (overleaf-queue-pending-edit)
   (let ((overleaf--is-overleaf-change t))
     (if (and overleaf--edits-in-flight (not edits))
         (progn
@@ -1098,7 +1098,7 @@ Mainly used to detect switchover between deletion and insertion."
              ;;        10))
              )
           (overleaf--debug "Edit type switchover --> flushing edit queue %s" overleaf--edit-queue)
-          (overleaf-queue-current-change))))))
+          (overleaf-queue-pending-edit))))))
 
 (defun overleaf--reset-edit-queue ()
   "Empty the edit queue and reset buffer to before the edit queue."
@@ -1111,7 +1111,7 @@ Mainly used to detect switchover between deletion and insertion."
   (when buffer
     (let ((overleaf--buffer buffer))
       (with-current-buffer buffer
-        (overleaf-queue-current-change)
+        (overleaf-queue-pending-edit)
         (overleaf--send-position-update)
         (when (and overleaf--websocket (websocket-openp overleaf--websocket) overleaf--edit-queue)
           (let ((buf-string (overleaf--buffer-string (point-min) (point-max)))
@@ -1159,8 +1159,10 @@ Mainly used to detect switchover between deletion and insertion."
   (setq-local overleaf--last-change-end -1)
   (setq-local overleaf--deletion-buffer ""))
 
-(defun overleaf-queue-current-change (&optional buffer)
-  "Queue the change to BUFFER currently being built."
+(defun overleaf-queue-pending-edit (&optional buffer)
+  "Queue the edit in BUFFER that was in the process of being recorded.
+
+See `overleaf--before-change-function' and `overleaf--after-change-function'."
   (let ((overleaf--buffer (or buffer overleaf--buffer)))
     (when overleaf--buffer
       (with-current-buffer overleaf--buffer
