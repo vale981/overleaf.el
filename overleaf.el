@@ -154,7 +154,6 @@ profile.  Otherwise prompt."
           result)
       (user-error "Sqlite not available!"))))
 
-
 (defvar overleaf-save-cookies (lambda (cookies)
                                 (setq overleaf-cookies cookies))
   "A function (lambda) that stores the session cookies.
@@ -1375,7 +1374,6 @@ Format these according to `overleaf-user-info-template'."
           (goto-char position)
           (line-number-at-pos nil t))))))
 
-
 (cl-defmethod xref-location-marker ((l xref-overleaf-location))
   "Make a marker at the location L."
   (pcase-let (((cl-struct xref-overleaf-location buffer position) l))
@@ -1390,7 +1388,6 @@ Format these according to `overleaf-user-info-template'."
               (or (buffer-file-name buffer)
                   (format "(buffer %s)" (buffer-name buffer)))
               overleaf-document-id))))
-
 
 (defun overleaf-list-users ()
   "List other users' cursor positions in an xref buffer.
@@ -1437,7 +1434,6 @@ See variable `overleaf-user-info-template' for customization."
   (unless overleaf-project-id
     (user-error "Variable `overleaf-project-id' is not set"))
   (browse-url (format "%s/project/%s" (overleaf--url) overleaf-project-id)))
-
 
 
 ;;;###autoload
@@ -1492,7 +1488,6 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
                (funcall overleaf-save-cookies
                         (prin1-to-string full-cookies)))))
        (webdriver-session-stop session)))))
-
 
 ;;;###autoload
 (defun overleaf-find-file (url)
