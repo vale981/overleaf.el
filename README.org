@@ -147,6 +147,13 @@ To make Overleaf keybindings available in LaTeX buffers, bind a key to ~overleaf
   (keymap-set LaTeX-mode-map "C-c o" overleaf-command-map))
 #+end_src
 
+- For ~bibtex-mode~:
+
+#+begin_src elisp
+(with-eval-after-load 'bibtex
+    (keymap-set bibtex-mode-map "C-c o" overleaf-command-map))
+#+end_src
+
 The available keybindings are then:
   - =[prefix] c= - (re)-connect
   - =[prefix] d= - disconnect
@@ -156,6 +163,7 @@ The available keybindings are then:
   - =[prefix] f= - find file
   - =[prefix] g= - go to the cursor of another user
   - =[prefix] l= - list users' cursor positions in an xref buffer
+
 
 * Troubleshooting
 Rather verbose logging may be enabled by setting ~overleaf-debug~ to ~t~.
