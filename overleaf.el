@@ -103,8 +103,7 @@ profile.  Otherwise prompt."
   (lambda ()
     (setopt overleaf-cache-cookies nil)
     (if (sqlite-available-p)
-        (let* ((start-pos 0)
-               (profile-blocks
+        (let* ((profile-blocks
                 (with-temp-buffer
                   (insert-file-contents (expand-file-name (concat firefox-folder "/profiles.ini")))
                   (goto-char (point-min))
@@ -118,7 +117,7 @@ profile.  Otherwise prompt."
                 (remq 'nil
                       (mapcar (lambda (block)
                                 (save-match-data
-                                  (when-let
+                                  (when-let*
                                       ((path (progn (string-match "^Path=\\(.*?\\)$" block)
                                                     (match-string 1 block)))
                                        (name (progn (string-match "^Name=\\(.*?\\)$" block)
@@ -188,7 +187,7 @@ To be used with `overleaf-save-cookies'."
   :type 'boolean)
 
 (defcustom overleaf-context-size 10
-  "The standard context window size used to find the correct place to re-apply an edit."
+  "Standard context window size for finding where to re-apply an edit."
   :type 'integer)
 
 (defcustom overleaf-cache-cookies t
@@ -395,6 +394,20 @@ The context window size is configured using `overleaf-context-size'."
                  (ignore-errors (forward-char (length ,context-before)))
                (goto-char ,pos))))))))
 
+;;;; Logging
+(defsubst overleaf--debug (format-string &rest args)
+  "Print a debug message with format string FORMAT-STRING and arguments ARGS."
+  (when overleaf-debug
+    (if overleaf--buffer
+        (with-current-buffer overleaf--buffer
+          (with-current-buffer (get-buffer-create (format "*overleaf-%s*" overleaf-document-id))
+            (setq buffer-read-only nil)
+            (goto-char (point-max))
+            (insert (apply #'format format-string args))
+            (insert "\n")
+            (setq buffer-read-only t)))
+      (apply #'warn format-string args))))
+
 ;;;; Communication
 
 (defun overleaf--get-full-cookies ()
@@ -413,7 +426,7 @@ The context window size is configured using `overleaf-context-size'."
 
 (defun overleaf--get-cookies ()
   "Load the cookies from `overleaf-cookies'."
-  (if-let
+  (if-let*
       ((cookies
         (cl-some (lambda (prefix)
                    (alist-get (concat prefix (overleaf--cookie-domain))
@@ -710,8 +723,7 @@ Re-connect if this is not the case."
           (mapcar
            (lambda (op)
              (let ((history-position (plist-get history-op :p))
-                   (position (plist-get op :p))
-                   (delta 0))
+                   (position (plist-get op :p)))
                (if (<= history-position position)
                    (progn
                      (overleaf--debug "--------> updating: history: %S  this: %S" history-op op)
@@ -823,7 +835,7 @@ PADDING (2 characters by default)."
          (final-collection
           (cl-loop for row in collection
                    collect `(,(let ((str (apply #'format format-string (plist-get row :fields))))
-                                (if-let ((args (plist-get row :propertize)))
+                                (if-let* ((args (plist-get row :propertize)))
                                     (apply #'propertize str args)
                                   str))
                              ,(plist-get row :data)))))
@@ -906,8 +918,8 @@ Version: 2024-04-03"
   "Return context `(before after total)' of length LENGTH around the point."
   (let* ((length (or length overleaf-context-size))
          (pos (point))
-         (context-before (overleaf--buffer-string (max 1 (- pos 10)) pos))
-         (context-after (overleaf--buffer-string pos (min (point-max) (+ pos 10))))
+         (context-before (overleaf--buffer-string (max 1 (- pos length)) pos))
+         (context-after (overleaf--buffer-string pos (min (point-max) (+ pos length))))
          (context (concat context-before context-after)))
     (overleaf--debug "using context: %S %S %S" context-before context-after context)
     (list context-before context-after context)))
@@ -919,20 +931,6 @@ Version: 2024-04-03"
      (widen)
      (erase-buffer)
      (insert contents))))
-
-;;;; Logging
-(defsubst overleaf--debug (format-string &rest args)
-  "Print a debug message with format string FORMAT-STRING and arguments ARGS."
-  (when overleaf-debug
-    (if overleaf--buffer
-        (with-current-buffer overleaf--buffer
-          (with-current-buffer (get-buffer-create (format "*overleaf-%s*" overleaf-document-id))
-            (setq buffer-read-only nil)
-            (goto-char (point-max))
-            (insert (apply #'format format-string args))
-            (insert "\n")
-            (setq buffer-read-only t)))
-      (apply #'warn format-string args))))
 
 ;;;; Webdriver
 (defmacro overleaf--with-webdriver (&rest body)
@@ -1235,14 +1233,15 @@ Stolen from `rainbow-identifiers.el'."
     (save-restriction
       (widen)
       (when row
-        (let ((row (1+ row)))
-          (if (> row (count-lines (point-min) (point-max)))
-              nil
-            (goto-line row)
-            (let ((pos (+ (point) column)))
-              (if (> pos (point-max))
-                  nil
-                pos))))))))
+        ;; Overleaf's 'row' is 0-indexed.  'count-lines' is 1-based.
+        (if (> (1+ row) (count-lines (point-min) (point-max)))
+            nil
+          (goto-char (point-min))
+          (forward-line row)
+          (let ((pos (+ (point) column)))
+            (if (> pos (point-max))
+                nil
+              pos)))))))
 
 (defun overleaf--make-cursor-overlay (id name email row column)
   "Create a cursor overlay.
@@ -1250,8 +1249,8 @@ Stolen from `rainbow-identifiers.el'."
 The overlay stores the ID, the NAME, the EMAIL of the user and is
 displayed at line ROW and char COLUMN."
   (with-current-buffer overleaf--buffer
-    (when-let ((color (overleaf--id-to-color id))
-               (pos (overleaf--row-col-to-pos row column)))
+    (when-let* ((color (overleaf--id-to-color id))
+                (pos (overleaf--row-col-to-pos row column)))
       (save-excursion
         (goto-char pos)
         (let* (;; this hack is necessary, as otherwise the font
@@ -1295,7 +1294,7 @@ at line ROW and char COLUMN."
                    ;; recreating the overlay is necessary as otherwise the
                    ;; face properties won't be applied
                    (progn (overleaf--remove-cursor id)
-                          (when-let ((overlay (overleaf--make-cursor-overlay id name email row column)))
+                          (when-let* ((overlay (overleaf--make-cursor-overlay id name email row column)))
                             (puthash id overlay
                                      overleaf--user-positions))))
                   (newpos (overleaf--row-col-to-pos row column)))
@@ -1356,6 +1355,7 @@ Format these according to `overleaf-user-info-template'."
                                  (save-restriction
                                    (widen)
                                    (goto-char (overlay-start overlay))
+                                   (declare-function which-function "which-func")
                                    (or (which-function) ""))))
                            ""))))
    'face `(:foreground ,(overlay-get overlay 'color))))
@@ -1516,12 +1516,6 @@ Optionally prompt for the overleaf server URL."
                                           (match-string 1 project-page)))
                        :object-type 'plist :array-type 'list))
                     :projects))
-
-         (longest-name (apply #'max (mapcar (lambda
-                                              (project)
-                                              (length (plist-get project :name)))
-                                            projects)))
-
          (collection (mapcar (lambda (project)
                                `(:fields
                                  (,(plist-get project :name)
@@ -1552,7 +1546,7 @@ automatically.  Both these variables will be saved to the buffer."
           (if overleaf-project-id
               (let* ((cookies (overleaf--get-cookies))
                      (response-cookie
-                      (plz 'get (format "%s/socket.io/socket.io.js" (overleaf--url) overleaf-project-id)
+                      (plz 'get (format "%s/socket.io/socket.io.js" (overleaf--url))
                         :as 'response
                         :headers `(("Cookie" . ,cookies)
                                    ("Origin" . ,(overleaf--url)))))
