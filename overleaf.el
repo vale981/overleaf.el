@@ -1052,6 +1052,7 @@ overleaf."
                   (setq overleaf--last-change-end end))
                 (setq-local overleaf--last-change-begin overleaf--before-change-begin))
                (t
+                (overleaf-queue-pending-edit)
                 (let* ((old overleaf--before-change)
                        (final (let* ((kept-length (- (length old) length))
                                      (new-length (- end begin))
