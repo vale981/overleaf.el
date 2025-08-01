@@ -37,7 +37,7 @@ load path and ~(require 'overleaf)~. You can also use
 
     ;; Example: load cookies from firefox
     (setq overleaf-cookies
-          (overleaf-read-cookies-from-firefox "~/.mozilla/firefox/[YOUR PROFILE].default/cookies.sqlite")))
+          (overleaf-read-cookies-from-firefox :firefox-folder "~/.mozilla/firefox/" :profile "default"))
 #+end_src
 
 * Setting Up
@@ -68,12 +68,15 @@ file:
 Locate you Firefox profile folder and set:
 #+begin_src emacs-lisp
   (setq overleaf-cookies
-            (overleaf-read-cookies-from-firefox [optional: :profile "<profile>"]  ))
+        (overleaf-read-cookies-from-firefox :firefox-folder "~/.mozilla/firefox/" :profile "default"))
 #+end_src
 This assumes that you're logged into overleaf in this Firefox profile.
 
-*It is recommended that no Firefox instance using this profile is running while
-=overleaf.el= is accessing the cookie database. The cookies usually tend to be evicted from the database while Firefox is running and will only be put back upon closure.*
+*It is recommended that no Firefox instance using this profile is running
+while =overleaf.el= is accessing the cookie database. The cookies usually
+tend to be evicted from the database while Firefox is running and will only
+be put back upon closure. Also, (at least in Ubuntu) Firefox appears to lock
+the cookies.sqlite db while running*
 
 *** Manual
 If the above doesn't work for you, simply open the overleaf document
@@ -87,7 +90,16 @@ header. It should have contents like:
 Then set ~overleaf-cookies~ to the cookies string
 #+begin_src elisp
   (setq overleaf-cookies
-        (("[overleaf domain (ovelerleaf.com)]" "overleaf_session2=[session]" [expiry unix time])))
+       '((".overleaf.com"
+         "overleaf_session2=>>paste-your-cookie-here<<"
+         >>expiry-timestamp<<)))
+#+end_src
+A concrete example would look like
+#+begin_src emacs-lisp
+  (setq overleaf-cookies
+        '((".overleaf.com"
+          "overleaf_session2=s%3AIvGAKdfgfrzhthacNJuGygbjyugC-sgPD0X.U69yWktl4wMxBIKMfJNgvfhjmNbhFKjfVKYnCbiOUONLVw0Xycbp0"
+          1754494321)))
 #+end_src
 or store the cookies by any means you'd like (see above) and set
 ~overleaf-cookies~ to a function that returns the cookie string. The
