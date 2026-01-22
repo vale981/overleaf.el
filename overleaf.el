@@ -156,7 +156,29 @@ profile.  Otherwise prompt."
                 (if profile
                     (expand-file-name (concat firefox-folder "/" profile "/cookies.sqlite"))
                   (user-error "Profile does not exist"))))
-          (overleaf--sqlite-select-firefox-overleaf-cookies cookie-file))
+          (condition-case err
+              (overleaf--sqlite-select-firefox-overleaf-cookies cookie-file)
+            (sqlite-error
+             (condition-case _err
+                 (let* ((temp-dir (make-temp-file "overleaf-firefox-cookies." t))
+                        (temp-cookie-file (expand-file-name "cookies.sqlite" temp-dir))
+                        (cookie-file-wal (concat cookie-file "-wal"))
+                        (temp-cookie-file-wal (concat temp-cookie-file "-wal"))
+                        (cookie-file-shm (concat cookie-file "-shm"))
+                        (temp-cookie-file-shm (concat temp-cookie-file "-shm")))
+                   (unwind-protect
+                       (progn
+                         (copy-file cookie-file temp-cookie-file t t)
+                         (when (file-exists-p cookie-file-wal)
+                           (ignore-errors
+                             (copy-file cookie-file-wal temp-cookie-file-wal t t)))
+                         (when (file-exists-p cookie-file-shm)
+                           (ignore-errors
+                             (copy-file cookie-file-shm temp-cookie-file-shm t t)))
+                         (overleaf--sqlite-select-firefox-overleaf-cookies temp-cookie-file))
+                     (ignore-errors (delete-directory temp-dir t))))
+               (sqlite-error
+                (signal 'sqlite-error err))))))
       (user-error "Sqlite not available!"))))
 
 (defvar overleaf-save-cookies (lambda (cookies)
