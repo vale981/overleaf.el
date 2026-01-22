@@ -118,10 +118,10 @@ profile.  Otherwise prompt."
                       (mapcar (lambda (block)
                                 (save-match-data
                                   (when-let*
-                                      ((path (progn (string-match "^Path=\\(.*?\\)$" block)
-                                                    (match-string 1 block)))
-                                       (name (progn (string-match "^Name=\\(.*?\\)$" block)
-                                                    (match-string 1 block))))
+                                      ((path (and (string-match "^Path=\\(.*?\\)$" block)
+                                                  (match-string 1 block)))
+                                       (name (and (string-match "^Name=\\(.*?\\)$" block)
+                                                  (match-string 1 block))))
                                     `(:fields (,name) :data ,path))))
                               profile-blocks)))
 
