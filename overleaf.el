@@ -93,6 +93,24 @@ To be used with `overleaf-cookies'."
       (insert-file-contents (expand-file-name file))
       (read (string-trim (buffer-string))))))
 
+(defun overleaf--sqlite-select-firefox-overleaf-cookies (dbfile)
+  "Return Overleaf cookies from Firefox cookie DBFILE.
+Returns a list of (host cookie-string expiry)."
+  (let ((db (sqlite-open dbfile)))
+    (unwind-protect
+        (mapcar
+         (lambda (row)
+           (pcase-let* ((`(,domain ,name ,value ,expiry) row))
+             `(,domain
+               ,(format "%s=%s" name value)
+               ,expiry)))
+         (sqlite-select
+          db
+          (concat
+           "SELECT host, name, value, expiry FROM moz_cookies "
+           "WHERE name = 'overleaf_session2' OR name = 'overleaf.sid'")))
+      (sqlite-close db))))
+
 ;;;###autoload
 (cl-defun overleaf-read-cookies-from-firefox (&key (firefox-folder "~/.mozilla/firefox/") (profile nil))
   "Make a cookie saving function reading the database at FIREFOX-FOLDER.
@@ -137,20 +155,8 @@ profile.  Otherwise prompt."
                (cookie-file
                 (if profile
                     (expand-file-name (concat firefox-folder "/" profile "/cookies.sqlite"))
-                  (user-error "Profile does not exist")))
-               (db (sqlite-open cookie-file))
-               (result
-                (mapcar
-                 (lambda (row)
-                   (pcase-let* ((`(,domain ,name ,value ,expiry) row))
-                     `(,domain
-                       ,(format "%s=%s" name value)
-                       ,expiry)))
-                 (sqlite-select
-                  db "SELECT host, name, value, expiry FROM moz_cookies WHERE name = 'overleaf_session2' OR name = 'overleaf.sid'"))))
-
-          (sqlite-close db)
-          result)
+                  (user-error "Profile does not exist"))))
+          (overleaf--sqlite-select-firefox-overleaf-cookies cookie-file))
       (user-error "Sqlite not available!"))))
 
 (defvar overleaf-save-cookies (lambda (cookies)
