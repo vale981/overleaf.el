@@ -7,7 +7,7 @@
 ;; Created: March 18, 2025
 ;; URL: https://github.com/vale981/overleaf.el
 ;; Package-Requires: ((emacs "29.4") (plz "0.9") (websocket "1.15") (webdriver "0.1") (posframe "1.4.4"))
-;; Version: 1.1.4
+;; Version: 1.1.5
 ;; Keywords: hypermedia, tex, comm
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; This file is not part of GNU Emacs.
@@ -550,8 +550,31 @@ The context window size is configured using `overleaf-context-size'."
                (let ((hash (and (not (buffer-modified-p))
                                 (save-restriction (widen) (buffer-hash)))))
                  (setq-local buffer-read-only nil)
-                 (overleaf--reset-buffer-to
-                  (overleaf--decode-utf8 (string-join (json-parse-string doc) "\n")))
+                 (let* ((server-text (overleaf--decode-utf8 (string-join (json-parse-string doc) "\n")))
+                        (local-text (save-restriction
+                                      (widen)
+                                      (buffer-substring-no-properties (point-min) (point-max)))))
+                   (overleaf--reset-buffer-to server-text)
+                   (when (not (string= local-text server-text))
+                     (run-with-timer
+                      0 nil
+                      (lambda (buf local)
+                        (when (buffer-live-p buf)
+                          (with-current-buffer buf
+                            (when (y-or-n-p "Resolve conflicts with ediff? ")
+                              (let ((local-buffer (generate-new-buffer "*overleaf-local*")))
+                                (with-current-buffer local-buffer
+                                  (insert local)
+                                  (set-buffer-modified-p nil))
+                                (let ((ctl-buf (ediff-buffers local-buffer buf)))
+                                  (with-current-buffer ctl-buf
+                                    (setq-local ediff-keep-variants t)
+                                    (add-hook 'ediff-quit-hook
+                                              (lambda ()
+                                                (when (buffer-live-p ediff-buffer-A)
+                                                  (kill-buffer ediff-buffer-A)))
+                                              nil t))))))))
+                      (current-buffer) local-text)))
 
                  (setq buffer-undo-list nil)
                  (overleaf--set-version version)
