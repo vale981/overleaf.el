@@ -225,6 +225,12 @@ This does nothing if `overleaf-read-cookies-from-firefox'
 or `overleaf-read-cookies-from-chromium' is used."
   :type 'boolean)
 
+(defcustom overleaf-ancestor-location 'local
+  "Where to store the overleaf ancestor backup files."
+  :type '(choice (const :tag "Local directory" local)
+                 (const :tag "Centralized (~/.emacs.d/overleaf-ancestors/)" centralized))
+  :group 'overleaf)
+
 (defcustom overleaf-user-info-template "%n\t%e\t%i"
   "The `format-spec' template used in `overleaf-list-users'.
 The following specification characters can be used:
@@ -529,6 +535,30 @@ The context window size is configured using `overleaf-context-size'."
               (setq overleaf--websocket nil)
               (overleaf-connect))))))))
 
+(defun overleaf--sync-surgically (source-buf target-buf)
+  "Surgically sync TARGET-BUF to SOURCE-BUF using hunk-by-hunk application."
+  (save-excursion
+    (save-window-excursion
+      (let ((diff-buf (let ((inhibit-message t))
+                        (diff-no-select target-buf source-buf "-u -U0" t))))
+        (when (buffer-live-p diff-buf)
+          (unwind-protect
+              (with-current-buffer diff-buf
+                (goto-char (point-min))
+                (while (re-search-forward "^@@" nil t)
+                  (beginning-of-line)
+                  (let ((diff-jump-to-old-file t)
+                        (inhibit-read-only t)
+                        (inhibit-message t))
+                    (cl-letf* (((symbol-function 'diff-find-file-definition)
+                                (lambda (&rest _) target-buf))
+                               ((symbol-function 'read-file-name)
+                                (lambda (&rest _) (buffer-name target-buf)))
+                               ((symbol-function 'completing-read)
+                                (lambda (&rest _) (buffer-name target-buf))))
+                      (diff-apply-hunk)))))
+            (kill-buffer diff-buf)))))))
+
 (defun overleaf--parse-message (ws message)
   "Parse a message MESSAGE from overleaf, responding by writing to WS."
   (with-current-buffer overleaf--buffer
@@ -562,18 +592,62 @@ The context window size is configured using `overleaf-context-size'."
                         (when (buffer-live-p buf)
                           (with-current-buffer buf
                             (when (y-or-n-p "Resolve conflicts with ediff? ")
-                              (let ((local-buffer (generate-new-buffer "*overleaf-local*")))
+                              (let* ((local-buffer (generate-new-buffer "*overleaf-local*"))
+                                     (ancestor-file (overleaf--ancestor-file))
+                                     (has-ancestor (and ancestor-file (file-exists-p ancestor-file))))
                                 (with-current-buffer local-buffer
                                   (insert local)
                                   (set-buffer-modified-p nil))
-                                (let ((ctl-buf (ediff-buffers local-buffer buf)))
-                                  (with-current-buffer ctl-buf
-                                    (setq-local ediff-keep-variants t)
-                                    (add-hook 'ediff-quit-hook
-                                              (lambda ()
-                                                (when (buffer-live-p ediff-buffer-A)
-                                                  (kill-buffer ediff-buffer-A)))
-                                              nil t))))))))
+                                (if has-ancestor
+                                    (let* ((ancestor-buffer (generate-new-buffer "*overleaf-ancestor*"))
+                                           (server-buffer (generate-new-buffer "*overleaf-server*"))
+                                           (target-buf buf)
+                                           (coding (with-current-buffer target-buf buffer-file-coding-system))
+                                           (server-text (with-current-buffer target-buf (buffer-string))))
+                                      (with-current-buffer ancestor-buffer
+                                        (insert-file-contents ancestor-file)
+                                        (set-buffer-file-coding-system coding)
+                                        (set-buffer-modified-p nil))
+                                      (with-current-buffer server-buffer
+                                        (insert server-text)
+                                        (set-buffer-file-coding-system coding)
+                                        (set-buffer-modified-p nil))
+                                      (with-current-buffer local-buffer
+                                        (set-buffer-file-coding-system coding))
+                                      (ediff-merge-buffers-with-ancestor
+                                       local-buffer server-buffer ancestor-buffer
+                                       (list (lambda ()
+                                               (let ((res-buf ediff-buffer-C)
+                                                     (target target-buf)
+                                                     (a-buf ediff-buffer-A)
+                                                     (b-buf ediff-buffer-B)
+                                                     (anc-buf ediff-ancestor-buffer))
+                                                 (let ((sync-fn (lambda ()
+                                                                  (when (and (buffer-live-p res-buf)
+                                                                             (buffer-live-p target))
+                                                                    (overleaf--sync-surgically res-buf target)))))
+                                                   (add-hook 'ediff-select-hook sync-fn nil t)
+                                                   (add-hook 'ediff-after-merge-hook sync-fn nil t)
+                                                   (add-hook 'ediff-quit-hook
+                                                             (lambda ()
+                                                               (funcall sync-fn)
+                                                               (with-current-buffer target
+                                                                 (overleaf--save-ancestor))
+                                                               (when (buffer-live-p a-buf) (kill-buffer a-buf))
+                                                               (when (buffer-live-p b-buf) (kill-buffer b-buf))
+                                                               (when (buffer-live-p anc-buf) (kill-buffer anc-buf))
+                                                               (when (buffer-live-p res-buf) (kill-buffer res-buf)))
+                                                             nil t)
+                                                   (funcall sync-fn)))))))
+                                  (let ((ctl-buf (ediff-buffers local-buffer buf)))
+                                    (with-current-buffer ctl-buf
+                                      (setq-local ediff-keep-variants t)
+                                      (add-hook 'ediff-quit-hook
+                                                (lambda ()
+                                                  (setq ediff-buffer-B nil) ; Protect main buffer
+                                                  (when (buffer-live-p ediff-buffer-A)
+                                                    (kill-buffer ediff-buffer-A)))
+                                                nil t)))))))))
                       (current-buffer) local-text)))
 
                  (setq buffer-undo-list nil)
@@ -1660,6 +1734,25 @@ automatically.  Both these variables will be saved to the buffer."
             (overleaf-find-file (overleaf--url)))))
     (error "Please set `overleaf-cookies'")))
 
+(defun overleaf--ancestor-file ()
+  "Return the file path for the overleaf ancestor backup."
+  (when buffer-file-name
+    (pcase overleaf-ancestor-location
+      ('local
+       (concat (file-name-directory buffer-file-name)
+               "." (file-name-nondirectory buffer-file-name)
+               ".overleaf-ancestor"))
+      ('centralized
+       (let ((dir (expand-file-name "overleaf-ancestors/" user-emacs-directory)))
+         (unless (file-directory-p dir)
+           (make-directory dir t))
+         (concat dir (md5 buffer-file-name) ".ancestor"))))))
+
+(defun overleaf--save-ancestor ()
+  "Save the current buffer state as the overleaf ancestor."
+  (when-let ((ancestor (overleaf--ancestor-file)))
+    (write-region nil nil ancestor nil 'silent)))
+
 ;;;###autoload
 (defun overleaf-disconnect ()
   "Disconnect from overleaf."
@@ -1675,6 +1768,7 @@ automatically.  Both these variables will be saved to the buffer."
     (websocket-close overleaf--websocket)
     (when overleaf-auto-save
       (overleaf--save-buffer))
+    (overleaf--save-ancestor)
     (setq-local overleaf--force-close nil)
     (remhash overleaf--websocket overleaf--ws-url->buffer-table)))
 

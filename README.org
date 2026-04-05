@@ -134,6 +134,16 @@ If you have a font with nerd-font symbol support you can set:
 #+end_src
 
 
+** Conflict Resolution and 3-Way Merging
+When reconnecting a buffer that has local changes not yet synced to Overleaf, the package will detect the discrepancy and prompt you to "Resolve conflicts with ediff?".
+
+To make conflict resolution more efficient, ~overleaf.el~ supports **3-way merging**. It achieves this by automatically saving a hidden "ancestor" backup of your document whenever you disconnect. When a conflict occurs later, this ancestor is used as a common base to automate the merge of non-overlapping changes.
+
+The location of these ancestor backups can be customized via the ~overleaf-ancestor-location~ variable:
+- ~'local~ (Default): Saves a hidden file in the same directory as the document (e.g., ~.filename.overleaf-ancestor~).
+- ~'centralized~: Saves all ancestor backups in a dedicated directory at ~~/.emacs.d/overleaf-ancestors/~.
+
+
 ** Keybindings
 To make Overleaf keybindings available in LaTeX buffers, bind a key to ~overleaf-command-map~, like so:
 
