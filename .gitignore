@@ -19,3 +19,4 @@ data
 .projectile*
 
 /overleaf-server
+.nixbox

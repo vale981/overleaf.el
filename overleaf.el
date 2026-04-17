@@ -305,7 +305,7 @@ See `overleaf--edit-queue'.")
 (defvar-local overleaf--mode-line ""
   "Contents of the mode-line indicator.")
 
-(defvar overleaf--ws-url->buffer-table (make-hash-table :test #'equal)
+(defvar overleaf--ws->buffer-table (make-hash-table :test #'eql)
   "A hash table associating web-sockets to buffers.")
 
 (defvar overleaf--buffer nil
@@ -435,7 +435,7 @@ The context window size is configured using `overleaf-context-size'."
 (defsubst overleaf--debug (format-string &rest args)
   "Print a debug message with format string FORMAT-STRING and arguments ARGS."
   (when overleaf-debug
-    (if overleaf--buffer
+    (if (buffer-live-p overleaf--buffer)
         (with-current-buffer overleaf--buffer
           (with-current-buffer (get-buffer-create (format "*overleaf-%s*" overleaf-document-id))
             (setq buffer-read-only nil)
@@ -490,45 +490,47 @@ The context window size is configured using `overleaf-context-size'."
 (defun overleaf--on-open (websocket)
   "Handle the open even of the web-socket WEBSOCKET."
   (let ((overleaf--buffer
-         (gethash (websocket-url websocket) overleaf--ws-url->buffer-table)))
+         (gethash websocket overleaf--ws->buffer-table)))
 
-    (with-current-buffer overleaf--buffer
-      (overleaf--update-modeline)
+    (when (buffer-live-p overleaf--buffer)
+      (with-current-buffer overleaf--buffer
+        (overleaf--update-modeline)
 
-      (add-hook 'after-change-functions #'overleaf--after-change-function nil :local)
-      (add-hook 'before-change-functions #'overleaf--before-change-function nil :local)
-      (add-hook 'kill-buffer-hook #'overleaf-disconnect nil :local)
+        (add-hook 'after-change-functions #'overleaf--after-change-function nil :local)
+        (add-hook 'before-change-functions #'overleaf--before-change-function nil :local)
 
-      (setq-local
-       overleaf--flush-edit-queue-timer
-       (progn
-         (when overleaf--flush-edit-queue-timer
-           (cancel-timer overleaf--flush-edit-queue-timer))
-         (run-with-idle-timer overleaf-flush-interval t
-                              (lambda (buffer)
-                                (with-current-buffer buffer
-                                  (unless overleaf--receiving
-                                    (overleaf--flush-edit-queue buffer))))
-                              overleaf--buffer))))))
+        (setq-local
+         overleaf--flush-edit-queue-timer
+         (progn
+           (when overleaf--flush-edit-queue-timer
+             (cancel-timer overleaf--flush-edit-queue-timer))
+           (run-with-idle-timer overleaf-flush-interval t
+                                (lambda (buffer)
+                                  (when (buffer-live-p buffer)
+                                    (with-current-buffer buffer
+                                      (unless overleaf--receiving
+                                        (overleaf--flush-edit-queue buffer)))))
+                                overleaf--buffer)))))))
 
 (defun overleaf--on-message (ws frame)
   "Handle a message received from websocket WS with contents FRAME."
   (let ((overleaf--buffer
-         (gethash (websocket-url ws) overleaf--ws-url->buffer-table)))
-    (overleaf--debug "Got message %S" frame)
-    (overleaf--parse-message ws (websocket-frame-text frame))))
+         (gethash ws overleaf--ws->buffer-table)))
+    (when (buffer-live-p overleaf--buffer)
+      (overleaf--debug "Got message %S" frame)
+      (overleaf--parse-message ws (websocket-frame-text frame)))))
 
 (defun overleaf--on-close (ws)
   "Handle the closure of the websocket WS."
   (let ((overleaf--buffer
-         (gethash (websocket-url ws) overleaf--ws-url->buffer-table)))
-    (when overleaf--buffer
+         (gethash ws overleaf--ws->buffer-table)))
+    (remhash ws overleaf--ws->buffer-table)
+    (when (buffer-live-p overleaf--buffer)
       (with-current-buffer overleaf--buffer
         (when overleaf--websocket
           (overleaf--message "Websocket for document %s closed." overleaf-document-id)
           (setq-local buffer-read-only nil)
           (cancel-timer overleaf--flush-edit-queue-timer)
-          (remhash (websocket-url ws) overleaf--ws-url->buffer-table)
           (setq-local overleaf--websocket nil)
           (overleaf--update-modeline)
           (unless overleaf--force-close
@@ -667,8 +669,9 @@ The context window size is configured using `overleaf-context-size'."
       (run-with-idle-timer
        1 nil
        (lambda (buffer)
-         (with-current-buffer buffer
-           (overleaf--write-buffer-variables)))
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (overleaf--write-buffer-variables))))
        overleaf--buffer)
       (overleaf--update-modeline))))
 
@@ -1539,18 +1542,18 @@ See variable `overleaf-user-info-template' for customization."
           (lambda ()
             (let ((xrefs))
               (maphash (lambda (_ buff)
-                         (message "%S" buff)
-                         (with-current-buffer buff
-                           (maphash
-                            (lambda (id overlay)
-                              (cl-pushnew
-                               (xref-make
-                                (overleaf--format-user-info id overlay)
-                                (xref-make-overleaf-location (overlay-buffer overlay)
-                                                             (overlay-start overlay)))
-                               xrefs))
-                            overleaf--user-positions)))
-                       overleaf--ws-url->buffer-table)
+                         (when (buffer-live-p buff)
+                           (with-current-buffer buff
+                             (maphash
+                              (lambda (id overlay)
+                                (cl-pushnew
+                                 (xref-make
+                                  (overleaf--format-user-info id overlay)
+                                  (xref-make-overleaf-location (overlay-buffer overlay)
+                                                               (overlay-start overlay)))
+                                 xrefs))
+                              overleaf--user-positions))))
+                       overleaf--ws->buffer-table)
               xrefs))))
     (if (overleaf--other-users-p)
         (xref-show-xrefs xref-fn nil)
@@ -1729,26 +1732,24 @@ automatically.  Both these variables will be saved to the buffer."
                 ;; magic value, don't ask me why
                 (setq-local overleaf--sequence-id 2)
 
-                (puthash
-                 (websocket-url
-                  (setq-local overleaf--websocket
-                              (websocket-open
-                               (replace-regexp-in-string
-                                "http" "ws"
-                                (replace-regexp-in-string
-                                 "https" "wss"
-                                 (format "%s/socket.io/1/websocket/%s?projectId=%s&esh=1&ssp=1"
-                                         (overleaf--url) ws-id overleaf-project-id)))
-                               :on-message #'overleaf--on-message
-                               :on-close #'overleaf--on-close
-                               :on-open #'overleaf--on-open
-                               :custom-header-alist `(("Cookie" . ,full-cookies)
-                                                      ("Origin" . ,(overleaf--url))))))
-                 overleaf--buffer
-                 overleaf--ws-url->buffer-table)
+                (setq-local overleaf--websocket
+                            (websocket-open
+                             (replace-regexp-in-string
+                              "http" "ws"
+                              (replace-regexp-in-string
+                               "https" "wss"
+                               (format "%s/socket.io/1/websocket/%s?projectId=%s&esh=1&ssp=1"
+                                       (overleaf--url) ws-id overleaf-project-id)))
+                             :on-message #'overleaf--on-message
+                             :on-close #'overleaf--on-close
+                             :on-open #'overleaf--on-open
+                             :custom-header-alist `(("Cookie" . ,full-cookies)
+                                                    ("Origin" . ,(overleaf--url)))))
+                (puthash overleaf--websocket overleaf--buffer overleaf--ws->buffer-table)
                 (overleaf--update-modeline))
             (overleaf-find-file (overleaf--url)))))
     (error "Please set `overleaf-cookies'")))
+
 
 (defun overleaf--ancestor-file ()
   "Return the file path for the overleaf ancestor backup."
@@ -1773,20 +1774,23 @@ automatically.  Both these variables will be saved to the buffer."
 (defun overleaf-disconnect ()
   "Disconnect from overleaf."
   (interactive)
-  (when overleaf--websocket
-    (overleaf--message "Disconnecting")
-    (maphash
-     (lambda (_ overlay)
-       (delete-overlay overlay))
-     overleaf--user-positions)
-    (setq-local overleaf--force-close t)
-    (setq-local overleaf--edit-queue '())
-    (websocket-close overleaf--websocket)
-    (when overleaf-auto-save
-      (overleaf--save-buffer))
-    (overleaf--save-ancestor)
-    (setq-local overleaf--force-close nil)
-    (remhash overleaf--websocket overleaf--ws-url->buffer-table)))
+  (when (and (boundp 'overleaf--websocket) overleaf--websocket)
+    (let ((ws overleaf--websocket))
+      (overleaf--message "Disconnecting")
+      (maphash
+       (lambda (_ overlay)
+         (delete-overlay overlay))
+       overleaf--user-positions)
+      (setq-local overleaf--force-close t)
+      (setq-local overleaf--edit-queue '())
+      (websocket-close ws)
+      (when overleaf-auto-save
+        (overleaf--save-buffer))
+      (overleaf--save-ancestor)
+      (setq-local overleaf--force-close nil)
+      (remhash ws overleaf--ws->buffer-table)
+      (setq-local overleaf--websocket nil)
+      (overleaf--update-modeline))))
 
 (defun overleaf--mode-line-item (text &rest help-lines)
   "Return a mode-line item diplaying TEXT having a tooltip with HELP-LINES.
@@ -1806,7 +1810,9 @@ to the default tooltip text."
    overleaf--mode-line
    (list
     (overleaf--mode-line-item (if overleaf-use-nerdfont "(: " "(Ovl: "))
-    (if (websocket-openp overleaf--websocket)
+    (if (and (boundp 'overleaf--websocket)
+             overleaf--websocket
+             (websocket-openp overleaf--websocket))
         (list
          (cond ((< overleaf--doc-version 0)
                 (overleaf--mode-line-item (if overleaf-use-nerdfont "⟲" "...") "connecting"))
@@ -1836,6 +1842,7 @@ to the default tooltip text."
                                      '(overleaf--mode-line))))
 
   (overleaf--update-modeline)
+  (add-hook 'kill-buffer-hook #'overleaf-disconnect nil :local)
   (setq inhibit-modification-hooks nil))
 
 ;;;###autoload
@@ -1866,7 +1873,9 @@ Interactively with no argument, this command toggles the mode."
       (overleaf--init)
     (setq-local overleaf--mode-line "")
     (force-mode-line-update t)
-    (overleaf-disconnect)))
+    (overleaf-disconnect)
+    (remove-hook 'kill-buffer-hook #'overleaf-disconnect :local)))
+
 
 
 (provide 'overleaf)
