@@ -126,11 +126,10 @@ profile.  Otherwise prompt."
                   (insert-file-contents (expand-file-name (concat firefox-folder "/profiles.ini")))
                   (goto-char (point-min))
                   (let ((matches))
-                    (while (re-search-forward "\\[.*\\]\\(\\(?:.\\|\n\\)+?\\)\\[" (point-max) t)
+                    (while (re-search-forward "^\\[.+\\]\n\\(\\(?:.*\n?\\)*?\\)\\(?:^\\[\\|$\\)" (point-max) t)
                       (backward-char)
                       (push (match-string 1) matches))
                     matches)))
-
                (profiles
                 (remq 'nil
                       (mapcar (lambda (block)
