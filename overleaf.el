@@ -38,6 +38,12 @@
 (require 'plz)
 (require 'posframe)
 (require 'xref)
+(require 'ediff)
+
+(defvar ediff-buffer-A)
+(defvar ediff-buffer-B)
+(defvar ediff-buffer-C)
+(defvar ediff-ancestor-buffer)
 
 ;;; Code:
 
@@ -317,7 +323,23 @@ See `overleaf--edit-queue'.")
   "The contents of the buffer before any edits were queued.")
 
 (defvar-local overleaf--last-good-state nil
-  "The last received overleaf update.")
+  "The buffer text as of the last time it was fully synced with overleaf,
+i.e.\\= the last time both `overleaf--edit-queue' and
+`overleaf--edits-in-flight' were empty.  Used to detect, on reconnect,
+whether the server document changed while we were disconnected.")
+
+(defvar-local overleaf--reconnect-pending-ops nil
+  "Local edits captured across a reconnect, for automatic replay.
+Set by `overleaf--capture-reconnect-state' right before
+`overleaf-connect' clears `overleaf--edit-queue' and
+`overleaf--edits-in-flight', and consumed by
+`overleaf--handle-initial-load'.")
+
+(defvar-local overleaf--reconnect-base-text nil
+  "The value of `overleaf--last-good-state' captured across a reconnect.
+Paired with `overleaf--reconnect-pending-ops'; replay is only safe
+when this matches the freshly rejoined server text, i.e.\\= nobody
+else changed the document while we were disconnected.")
 
 (defvar-local overleaf--history nil
   "An list that relates version numbers to the buffer text at that version.
@@ -582,81 +604,41 @@ The context window size is configured using `overleaf-context-size'."
           (let* ((server-text (overleaf--decode-utf8 (string-join (json-parse-string doc) "\n")))
                  (local-text (save-restriction
                                (widen)
-                               (buffer-substring-no-properties (point-min) (point-max)))))
+                               (buffer-substring-no-properties (point-min) (point-max))))
+                 ;; Safe only when nobody else changed the document while we
+                 ;; were disconnected: our pending ops are position-based
+                 ;; against `overleaf--reconnect-base-text', so replaying them
+                 ;; on top of a server text that has since moved on would
+                 ;; land at the wrong places.
+                 (auto-replay (and overleaf--reconnect-pending-ops
+                                   overleaf--reconnect-base-text
+                                   (string= overleaf--reconnect-base-text server-text))))
+            (unless (or auto-replay (string= local-text server-text))
+              ;; Back up unconditionally before the destructive reset below:
+              ;; `overleaf--resolve-conflicts' only writes the backup once the
+              ;; user answers its (async) ediff prompt, so without this, a
+              ;; declined or missed prompt would lose the local edits for good.
+              (overleaf--save-local-backup local-text)
+              (overleaf--message "Local changes differ from server, backed up to %s" (overleaf--local-backup-file)))
             (overleaf--reset-buffer-to server-text)
-            (when (not (string= local-text server-text))
+            (setq-local overleaf--last-good-state server-text)
+            (cond
+             (auto-replay
+              (setq-local overleaf--edit-queue (overleaf--apply-changes-internal overleaf--reconnect-pending-ops))
+              (overleaf--message "Reconnected; replaying %d pending edit(s)" (length overleaf--edit-queue)))
+             ((not (string= local-text server-text))
               (run-with-timer
                0 nil
-               (lambda (buf local)
-                 (when (buffer-live-p buf)
-                   (with-current-buffer buf
-                     (when (y-or-n-p "Resolve conflicts with ediff? ")
-                       (let* ((local-buffer (generate-new-buffer "*overleaf-local*"))
-                              (ancestor-file (overleaf--ancestor-file))
-                              (has-ancestor (and ancestor-file (file-exists-p ancestor-file))))
-                         (setq overleaf--window-configuration (current-window-configuration))
-                         (with-current-buffer local-buffer
-                           (insert local)
-                           (set-buffer-modified-p nil))
-                         (if has-ancestor
-                             (let* ((ancestor-buffer (generate-new-buffer "*overleaf-ancestor*"))
-                                    (server-buffer (generate-new-buffer "*overleaf-server*"))
-                                    (target-buf buf)
-                                    (coding (with-current-buffer target-buf buffer-file-coding-system))
-                                    (server-text (with-current-buffer target-buf (buffer-string))))
-                               (with-current-buffer ancestor-buffer
-                                 (insert-file-contents ancestor-file)
-                                 (set-buffer-file-coding-system coding)
-                                 (set-buffer-modified-p nil))
-                               (with-current-buffer server-buffer
-                                 (insert server-text)
-                                 (set-buffer-file-coding-system coding)
-                                 (set-buffer-modified-p nil))
-                               (with-current-buffer local-buffer
-                                 (set-buffer-file-coding-system coding))
-                               (ediff-merge-buffers-with-ancestor
-                                local-buffer server-buffer ancestor-buffer
-                                (list (lambda ()
-                                        (let ((res-buf ediff-buffer-C)
-                                              (target target-buf)
-                                              (a-buf ediff-buffer-A)
-                                              (b-buf ediff-buffer-B)
-                                              (anc-buf ediff-ancestor-buffer))
-                                          (let ((sync-fn (lambda ()
-                                                           (when (and (buffer-live-p res-buf)
-                                                                      (buffer-live-p target))
-                                                             (overleaf--sync-surgically res-buf target)))))
-                                            (add-hook 'ediff-select-hook sync-fn nil t)
-                                            (add-hook 'ediff-after-merge-hook sync-fn nil t)
-                                            (add-hook 'ediff-quit-hook
-                                                      (lambda ()
-                                                        (funcall sync-fn)
-                                                        (with-current-buffer target
-                                                          (overleaf--save-ancestor))
-                                                        (when (buffer-live-p a-buf) (kill-buffer a-buf))
-                                                        (when (buffer-live-p b-buf) (kill-buffer b-buf))
-                                                        (when (buffer-live-p anc-buf) (kill-buffer anc-buf))
-                                                        (when (buffer-live-p res-buf) (kill-buffer res-buf))
-                                                        (when overleaf--window-configuration
-                                                          (set-window-configuration overleaf--window-configuration)))
-                                                      nil t)
-                                            (funcall sync-fn)))))))
-                           (let ((ctl-buf (ediff-buffers local-buffer buf)))
-                             (with-current-buffer ctl-buf
-                               (setq-local ediff-keep-variants t)
-                               (add-hook 'ediff-quit-hook
-                                         (lambda ()
-                                           (setq ediff-buffer-B nil) ; Protect main buffer
-                                           (when (buffer-live-p ediff-buffer-A)
-                                             (kill-buffer ediff-buffer-A))
-                                           (when overleaf--window-configuration
-                                             (set-window-configuration overleaf--window-configuration)))
-                                         nil t)))))))))
+               #'overleaf--resolve-conflicts
                (current-buffer) local-text)))
+            (setq-local overleaf--reconnect-pending-ops nil)
+            (setq-local overleaf--reconnect-base-text nil))
 
           (setq buffer-undo-list nil)
           (overleaf--set-version version)
           (overleaf--push-to-history version)
+          (when overleaf--edit-queue
+            (overleaf--flush-edit-queue (current-buffer)))
 
           ;; Copied from `fill-paragraph':
           ;; If we didn't change anything in the buffer (and the buffer
@@ -726,14 +708,18 @@ The context window size is configured using `overleaf-context-size'."
          (let ((res (concat id ":::" (json-encode `(:name "clientPong" :args ,(plist-get message :args))))))
            (websocket-send-text ws res)))
         ("otUpdateApplied"
-         (let ((last-version (plist-get (car (plist-get message :args)) :lastV))
-               (version (plist-get (car (plist-get message :args)) :v))
-               (hash (plist-get (car (plist-get message :args)) :hash))
-               (overleaf--is-overleaf-change t)
-               (edits (when (plist-get message :args) (plist-get (car  (plist-get message :args)) :op))))
-           (overleaf--debug "%S Got update with version %s->%s (buffer version %s) %S" (buffer-name) last-version version overleaf--doc-version message)
-           (overleaf--apply-changes edits version last-version hash))
-         (overleaf--send-position-update))))))
+         (let* ((args (car (plist-get message :args)))
+                (doc (plist-get args :doc)))
+           (if (and doc overleaf-document-id (not (string= doc overleaf-document-id)))
+               (overleaf--debug "%S Ignoring update for unrelated document %S" (buffer-name) doc)
+             (let ((last-version (plist-get args :lastV))
+                   (version (plist-get args :v))
+                   (hash (plist-get args :hash))
+                   (overleaf--is-overleaf-change t)
+                   (edits (plist-get args :op)))
+               (overleaf--debug "%S Got update with version %s->%s (buffer version %s) %S" (buffer-name) last-version version overleaf--doc-version message)
+               (overleaf--apply-changes edits version last-version hash)))
+           (overleaf--send-position-update)))))))
 
 (defun overleaf--parse-message (ws message)
   "Parse a message MESSAGE from overleaf, responding by writing to WS."
@@ -838,14 +824,22 @@ is provided use the context to fine tune where the edit is applied."
                 (push `(:p ,(1- pos) :i ,insert) new-edits))
 
             (if-let* ((delete (plist-get op :d)))
-                (save-match-data
-                  (if (re-search-forward (regexp-quote delete) nil t)
+                (let ((len (length delete)))
+                  (if (and (<= (+ pos len) (1+ (buffer-size)))
+                           (string= (buffer-substring-no-properties pos (+ pos len)) delete))
                       (progn
-                        (let ((delete-loc (1- (- (point) (length delete)))))
-                          (replace-match "")
-                          (setq buffer-undo-list (memq nil buffer-undo-list))
-                          (push `(:p ,delete-loc :d ,delete) new-edits)))
-                    (setq edits nil))))))))
+                        (delete-region pos (+ pos len))
+                        (setq buffer-undo-list (memq nil buffer-undo-list))
+                        (push `(:p ,(1- pos) :d ,delete) new-edits))
+                    (overleaf--debug "Fuzzy deletion fallback for '%s' at %d" delete pos)
+                    (save-match-data
+                      (if (re-search-forward (regexp-quote delete) nil t)
+                          (progn
+                            (let ((delete-loc (1- (- (point) (length delete)))))
+                              (replace-match "")
+                              (setq buffer-undo-list (memq nil buffer-undo-list))
+                              (push `(:p ,delete-loc :d ,delete) new-edits)))
+                        (setq edits nil))))))))))
     (nreverse new-edits)))
 
 (defun overleaf--verify-buffer (hash)
@@ -862,23 +856,23 @@ Re-connect if this is not the case."
 (defun overleaf--transform-edits (edits history-edits)
   "Transform EDITS to new positions by HISTORY-EDITS that came after the EDITS."
   (dolist (history-op history-edits)
-    (setq edits
-          (mapcar
-           (lambda (op)
-             (let ((history-position (plist-get history-op :p))
-                   (position (plist-get op :p)))
-               (if (<= history-position position)
-                   (progn
-                     (overleaf--debug "--------> updating: history: %S  this: %S" history-op op)
-
-                     (plist-put
-                      op :p
-                      (+ position (let* ((insert (plist-get history-op :i))
-                                         (delete (plist-get history-op :d)))
-                                    (+ (if insert (length insert) 0)
-                                       (if delete (* -1 (length delete)) 0))))))
-                 op)))
-           edits)))
+    (let ((hp (plist-get history-op :p))
+          (hi (plist-get history-op :i))
+          (hd (plist-get history-op :d)))
+      (setq edits
+            (mapcar
+             (lambda (op)
+               (let ((p (plist-get op :p)))
+                 (cond
+                  (hi ; History Insert
+                   (when (<= hp p)
+                     (plist-put op :p (+ p (length hi)))))
+                  (hd ; History Delete
+                   (let ((hl (length hd)))
+                     (when (>= p hp)
+                       (plist-put op :p (max hp (- p hl)))))))
+                 op))
+             edits))))
   edits)
 
 (defun overleaf--apply-changes (edits version last-version hash)
@@ -892,17 +886,14 @@ them on top of the changes received from overleaf in the meantime."
   (let ((overleaf--is-overleaf-change t))
     (if (and overleaf--edits-in-flight (not edits))
         (progn
-          (let ((update (car overleaf--edits-in-flight)))
-            (overleaf--debug "%S BINGO, we've been waiting for this. %S %S" (buffer-name) (overleaf--update-to-version update) version)
-            (setf (overleaf--update-to-version update) version)
-            (overleaf--push-to-recent-updates
-             update)
-            (overleaf--push-to-history version (overleaf--buffer-string))
+          (let ((update (pop overleaf--edits-in-flight)))
+            (overleaf--debug "%S ACK received for version %s (expected %s)"
+                            (buffer-name) version (overleaf--update-to-version update))
             (setf (overleaf--update-to-version update) version)
             (setf (overleaf--update-from-version update) (1- version))
             (overleaf--push-to-recent-updates update)
-            (overleaf--set-version version))
-          (setq overleaf--edits-in-flight (cdr overleaf--edits-in-flight)))
+            (overleaf--push-to-history version (overleaf--buffer-string))
+            (overleaf--set-version version)))
 
       (when edits
         (overleaf--save-context
@@ -911,8 +902,10 @@ them on top of the changes received from overleaf in the meantime."
              (overleaf--debug "-------------> RESET")
              (overleaf--reset-buffer-to overleaf--buffer-before-edit-queue))
 
-           (when overleaf--edits-in-flight
-             (overleaf--reset-buffer-to (overleaf--update-buffer (car overleaf--edits-in-flight))))
+           (when (and edits overleaf--edits-in-flight)
+             (let ((all-in-flight (cl-mapcan (lambda (u) (copy-sequence (overleaf--update-edits u)))
+                                             overleaf--edits-in-flight)))
+               (setq edits (overleaf--transform-edits edits all-in-flight))))
 
            (overleaf--apply-changes-internal edits)
            (overleaf--set-version version)
@@ -923,16 +916,36 @@ them on top of the changes received from overleaf in the meantime."
              :edits edits
              :from-version (1- version) ;; we updated it so that there's no jump
              :to-version version
-             :edits edits
              :buffer ""))
+
+           (when overleaf--edits-in-flight
+             ;; Unlike `overleaf--edit-queue' below, in-flight edits were
+             ;; never undone from the buffer (only queued-but-unsent edits
+             ;; are rewound above) -- their text is already sitting in the
+             ;; buffer from when the user typed it, and EDITS was already
+             ;; transformed against it before being applied above.  So this
+             ;; only needs to update the recorded position for each pending
+             ;; update (for later bookkeeping/resends); re-applying it here
+             ;; too would insert its text a second time.
+             (overleaf--debug "updating in-flight edit positions")
+             (dolist (update overleaf--edits-in-flight)
+               (setf (overleaf--update-edits update)
+                     (overleaf--transform-edits (overleaf--update-edits update) edits))
+               (setf (overleaf--update-buffer update) (buffer-string))))
 
            (if overleaf--edit-queue
                (progn
                  (when edits
                    (setq overleaf--edit-queue (overleaf--transform-edits overleaf--edit-queue edits)))
-                 (setq overleaf--buffer-before-edit-queue (overleaf--buffer-string))
+                 (setq overleaf--buffer-before-edit-queue (buffer-string))
                  (setq overleaf--edit-queue (overleaf--apply-changes-internal overleaf--edit-queue)))
              (overleaf--reset-edit-queue))))))
+
+    ;; Only a known-good baseline (nothing of ours outstanding) is safe to
+    ;; replay pending edits against after a reconnect; see
+    ;; `overleaf--capture-reconnect-state'.
+    (unless (or overleaf--edits-in-flight overleaf--edit-queue)
+      (setq-local overleaf--last-good-state (overleaf--buffer-string)))
 
     (overleaf--update-modeline)))
 
@@ -1278,14 +1291,15 @@ Mainly used to detect switchover between deletion and insertion."
                      hash))
 
             (setq-local overleaf--sequence-id (1+ overleaf--sequence-id))
-            (push
-             (make-overleaf--update
-              :from-version overleaf--doc-version
-              :to-version next-version
-              :edits edits
-              :hash hash
-              :buffer buf-string)
-             overleaf--edits-in-flight)
+            (setq overleaf--edits-in-flight
+                  (nconc overleaf--edits-in-flight
+                         (list
+                          (make-overleaf--update
+                           :from-version overleaf--doc-version
+                           :to-version next-version
+                           :edits edits
+                           :hash hash
+                           :buffer buf-string))))
             (overleaf--debug "send %S %i %i" (buffer-name) overleaf--doc-version next-version)
             (overleaf--reset-edit-queue)
             (overleaf--set-version next-version)
@@ -1671,6 +1685,23 @@ Optionally prompt for the overleaf server URL."
     (setq-local overleaf-document-id nil)
     (overleaf-connect)))
 
+(defun overleaf--capture-reconnect-state ()
+  "Capture pending local edits before they are cleared by reconnecting.
+
+`overleaf-connect' unconditionally wipes `overleaf--edit-queue' and
+`overleaf--edits-in-flight' before it even opens the new websocket, so
+without this, edits still pending at the time of a forced reconnect
+\(hash mismatch, version gap, `otUpdateError') would only be
+recoverable via the manual ediff/backup path.  Paired with
+`overleaf--reconnect-base-text', `overleaf--handle-initial-load' uses
+this to replay the edits automatically when it is safe to do so."
+  (setq-local overleaf--reconnect-base-text overleaf--last-good-state)
+  (setq-local overleaf--reconnect-pending-ops
+              (append
+               (cl-mapcan (lambda (u) (copy-sequence (overleaf--update-edits u)))
+                          overleaf--edits-in-flight)
+               (copy-sequence overleaf--edit-queue))))
+
 ;;;###autoload
 (defun overleaf-connect ()
   "Connect current buffer to overleaf.
@@ -1680,6 +1711,7 @@ Requires `overleaf-cookies' to be set.  Prompts for the
 automatically.  Both these variables will be saved to the buffer."
   (interactive)
 
+  (overleaf--capture-reconnect-state)
   (overleaf-mode t)
   (overleaf-disconnect)
   (if overleaf-cookies
@@ -1764,10 +1796,113 @@ automatically.  Both these variables will be saved to the buffer."
            (make-directory dir t))
          (concat dir (md5 buffer-file-name) ".ancestor"))))))
 
+(defun overleaf--local-backup-file ()
+  "Return the file path for the local overleaf backup."
+  (when buffer-file-name
+    (concat (file-name-directory buffer-file-name)
+            "." (file-name-nondirectory buffer-file-name)
+            ".overleaf-local-backup")))
+
+(defun overleaf--save-local-backup (text)
+  "Save TEXT as the local overleaf backup."
+  (when-let ((backup (overleaf--local-backup-file)))
+    (write-region text nil backup nil 'silent)))
+
 (defun overleaf--save-ancestor ()
   "Save the current buffer state as the overleaf ancestor."
   (when-let ((ancestor (overleaf--ancestor-file)))
     (write-region nil nil ancestor nil 'silent)))
+
+(defun overleaf--cleanup-backup ()
+  "Ask the user if they want to delete the local backup file."
+  (when-let ((backup (overleaf--local-backup-file)))
+    (when (file-exists-p backup)
+      (when (y-or-n-p (format "Delete local backup file %s? " backup))
+        (delete-file backup)))))
+
+(defun overleaf--ediff-two-way (local-buffer target-buffer)
+  "Start a two-way ediff between LOCAL-BUFFER and TARGET-BUFFER."
+  (let ((ctl-buf (ediff-buffers local-buffer target-buffer)))
+    (with-current-buffer ctl-buf
+      (setq-local ediff-keep-variants t)
+      (add-hook 'ediff-quit-hook
+                (lambda ()
+                  (setq ediff-buffer-B nil) ; Protect main buffer
+                  (when (buffer-live-p ediff-buffer-A)
+                    (kill-buffer ediff-buffer-A))
+                  (when (and (boundp 'overleaf--window-configuration)
+                             overleaf--window-configuration)
+                    (set-window-configuration overleaf--window-configuration))
+                  (overleaf--cleanup-backup))
+                nil t))))
+
+(defun overleaf--ediff-three-way (local-buffer target-buffer ancestor-file)
+  "Start a three-way ediff between LOCAL-BUFFER and TARGET-BUFFER with ANCESTOR-FILE."
+  (let* ((ancestor-buffer (generate-new-buffer "*overleaf-ancestor*"))
+         (server-buffer (generate-new-buffer "*overleaf-server*"))
+         (coding (with-current-buffer target-buffer buffer-file-coding-system))
+         (server-text (with-current-buffer target-buffer (buffer-string))))
+    (with-current-buffer ancestor-buffer
+      (insert-file-contents ancestor-file)
+      (set-buffer-file-coding-system coding)
+      (set-buffer-modified-p nil))
+    (with-current-buffer server-buffer
+      (insert server-text)
+      (set-buffer-file-coding-system coding)
+      (set-buffer-modified-p nil))
+    (with-current-buffer local-buffer
+      (set-buffer-file-coding-system coding))
+    (condition-case err
+        (ediff-merge-buffers-with-ancestor
+         local-buffer server-buffer ancestor-buffer
+         (list (lambda ()
+                 (let ((res-buf ediff-buffer-C)
+                       (target target-buffer)
+                       (a-buf ediff-buffer-A)
+                       (b-buf ediff-buffer-B)
+                       (anc-buf ediff-ancestor-buffer))
+                   (let ((sync-fn (lambda ()
+                                    (when (and (buffer-live-p res-buf)
+                                               (buffer-live-p target))
+                                      (overleaf--sync-surgically res-buf target)))))
+                     (add-hook 'ediff-select-hook sync-fn nil t)
+                     (add-hook 'ediff-after-merge-hook sync-fn nil t)
+                     (add-hook 'ediff-quit-hook
+                               (lambda ()
+                                 (funcall sync-fn)
+                                 (with-current-buffer target
+                                   (overleaf--save-ancestor))
+                                 (when (buffer-live-p a-buf) (kill-buffer a-buf))
+                                 (when (buffer-live-p b-buf) (kill-buffer b-buf))
+                                 (when (buffer-live-p anc-buf) (kill-buffer anc-buf))
+                                 (when (buffer-live-p res-buf) (kill-buffer res-buf))
+                                 (when (and (boundp 'overleaf--window-configuration)
+                                            overleaf--window-configuration)
+                                   (set-window-configuration overleaf--window-configuration))
+                                 (overleaf--cleanup-backup))
+                               nil t)
+                     (funcall sync-fn))))))
+      (error
+       (message "3-way merge failed, falling back to 2-way: %s" (error-message-string err))
+       (when (buffer-live-p ancestor-buffer) (kill-buffer ancestor-buffer))
+       (when (buffer-live-p server-buffer) (kill-buffer server-buffer))
+       (overleaf--ediff-two-way local-buffer target-buffer)))))
+
+(defun overleaf--resolve-conflicts (buf local-text)
+  "Resolve conflicts in BUF using LOCAL-TEXT."
+  (when (buffer-live-p buf)
+    (with-current-buffer buf
+      (when (y-or-n-p "Resolve conflicts with ediff? ")
+        (let* ((local-buffer (generate-new-buffer "*overleaf-local*"))
+               (ancestor-file (overleaf--ancestor-file))
+               (has-ancestor (and ancestor-file (file-exists-p ancestor-file))))
+          (setq overleaf--window-configuration (current-window-configuration))
+          (with-current-buffer local-buffer
+            (insert local-text)
+            (set-buffer-modified-p nil))
+          (if has-ancestor
+              (overleaf--ediff-three-way local-buffer buf ancestor-file)
+            (overleaf--ediff-two-way local-buffer buf)))))))
 
 ;;;###autoload
 (defun overleaf-disconnect ()
@@ -1776,10 +1911,11 @@ automatically.  Both these variables will be saved to the buffer."
   (when (and (boundp 'overleaf--websocket) overleaf--websocket)
     (let ((ws overleaf--websocket))
       (overleaf--message "Disconnecting")
-      (maphash
-       (lambda (_ overlay)
-         (delete-overlay overlay))
-       overleaf--user-positions)
+      (when overleaf--user-positions
+        (maphash
+         (lambda (_ overlay)
+           (delete-overlay overlay))
+         overleaf--user-positions))
       (setq-local overleaf--force-close t)
       (setq-local overleaf--edit-queue '())
       (websocket-close ws)
