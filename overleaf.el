@@ -7,7 +7,7 @@
 ;; Created: March 18, 2025
 ;; URL: https://github.com/vale981/overleaf.el
 ;; Package-Requires: ((emacs "29.4") (plz "0.9") (websocket "1.15") (webdriver "0.1") (posframe "1.4.4"))
-;; Version: 1.1.5
+;; Version: 1.1.6
 ;; Keywords: hypermedia, tex, comm
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; This file is not part of GNU Emacs.
@@ -888,7 +888,7 @@ them on top of the changes received from overleaf in the meantime."
         (progn
           (let ((update (pop overleaf--edits-in-flight)))
             (overleaf--debug "%S ACK received for version %s (expected %s)"
-                            (buffer-name) version (overleaf--update-to-version update))
+                             (buffer-name) version (overleaf--update-to-version update))
             (setf (overleaf--update-to-version update) version)
             (setf (overleaf--update-from-version update) (1- version))
             (overleaf--push-to-recent-updates update)
@@ -1066,6 +1066,13 @@ Pilfered from
 URL `http://xahlee.info/emacs/emacs/elisp_insert_random_number_string.html'
 Version: 2024-04-03"
   (let ((xcharset "abcdfghjkmnpqrstvwxyz23456789") xcount xvec)
+    (setq xcount (length xcharset))
+    (setq xvec (mapcar (lambda (_) (aref xcharset (random xcount))) (make-vector (if CountX CountX 5) 0)))
+    (mapconcat #'char-to-string xvec)))
+
+(defun overleaf--random-hex-string (&optional CountX)
+  "Return a random hex string of length COUNTX."
+  (let ((xcharset "0123456789abcdef") xcount xvec)
     (setq xcount (length xcharset))
     (setq xvec (mapcar (lambda (_) (aref xcharset (random xcount))) (make-vector (if CountX CountX 5) 0)))
     (mapconcat #'char-to-string xvec)))
@@ -1284,7 +1291,7 @@ Mainly used to detect switchover between deletion and insertion."
                      (json-encode (apply #'vector overleaf--edit-queue))
                      (if overleaf-track-changes
                          (format ",\"meta\": {\"tc\":\"%s\"}"
-                                 (overleaf--random-string 18))
+                                 (overleaf--random-hex-string 18))
                        "")
                      next-version
                      overleaf--doc-version
