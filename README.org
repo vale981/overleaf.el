@@ -1,6 +1,3 @@
-:PROPERTIES:
-:ID:       9d694771-66a1-46dc-873a-858289333e3d
-:END:
 #+title: Overleaf.el
 
 #+HTML: <img src="./assets/overleaf-el-logo.svg" align="right" style="height: 150px;">
