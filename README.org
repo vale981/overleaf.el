@@ -26,7 +26,7 @@ load path and ~(require 'overleaf)~. You can also use
     :config
     ;; Example: load/save cookies from GPG encrypted file.
     ;;          (remove the .gpg extension to save unencrypted)
-    (let ((cookie-file "~/.overleaf-cookies.gpg"))
+    (let ((cookie-file "/home/user/.overleaf-cookies.gpg"))
       (setq overleaf-save-cookies
             (overleaf-save-cookies-to-file cookie-file))
       (setq overleaf-cookies
@@ -54,7 +54,7 @@ must be assigned a function that returns the cookie string. For
 example, the cookies can be stored and loaded from a =gpg= encrypted
 file:
 #+begin_src elisp
-  (let ((cookie-file "~/.overleaf-cookies.gpg"))
+  (let ((cookie-file "/home/user/.overleaf-cookies.gpg"))
       (setq overleaf-save-cookies
             (overleaf-save-cookies-to-file cookie-file))
       (setq overleaf-cookies
@@ -70,8 +70,8 @@ Locate your Firefox profile folder and set:
        [optional: :profile "<profile>"]))
 #+end_src
 This assumes that you're logged into overleaf in this Firefox profile.
-On GNU/Linux, the default =<firefox-folder>= is typically =~/.mozilla/firefox/=.
-On macOS, =<firefox-folder>= is typically =~/Library/Application Support/Firefox=.
+On GNU/Linux, the default =<firefox-folder>= is typically =/home/user/.mozilla/firefox/=.
+On macOS, =<firefox-folder>= is typically =/Users/user/Library/Application Support/Firefox=.
 
 *It is recommended that no Firefox instance using this profile is running while
 =overleaf.el= is accessing the cookie database. The cookies usually tend to be evicted from the database while Firefox is running and will only be put back upon closure.*
@@ -135,11 +135,11 @@ If you have a font with nerd-font symbol support you can set:
 ** Conflict Resolution and 3-Way Merging
 When reconnecting a buffer that has local changes not yet synced to Overleaf, the package will detect the discrepancy and prompt you to "Resolve conflicts with ediff?".
 
-To make conflict resolution more efficient, ~overleaf.el~ supports **3-way merging**. It achieves this by automatically saving a hidden "ancestor" backup of your document whenever you disconnect. When a conflict occurs later, this ancestor is used as a common base to automate the merge of non-overlapping changes.
+To make conflict resolution more efficient, ~overleaf.el~ supports *3-way merging*. It achieves this by automatically saving a hidden "ancestor" backup of your document whenever you disconnect. When a conflict occurs later, this ancestor is used as a common base to automate the merge of non-overlapping changes.
 
 The location of these ancestor backups can be customized via the ~overleaf-ancestor-location~ variable:
 - ~'local~ (Default): Saves a hidden file in the same directory as the document (e.g., ~.filename.overleaf-ancestor~).
-- ~'centralized~: Saves all ancestor backups in a dedicated directory at ~~/.emacs.d/overleaf-ancestors/~.
+- ~'centralized~: Saves all ancestor backups in a dedicated directory at ~/home/user/.emacs.d/overleaf-ancestors/~.
 
 
 ** Keybindings
