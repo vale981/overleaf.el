@@ -101,20 +101,30 @@ To be used with `overleaf-cookies'."
 
 (defun overleaf--sqlite-select-firefox-overleaf-cookies (dbfile)
   "Return Overleaf cookies from Firefox cookie DBFILE.
+Tries each domain in `overleaf--cookie-domains', most specific
+first, and returns as soon as one of them has matching cookies.
 Returns a list of (host cookie-string expiry)."
   (let ((db (sqlite-open dbfile)))
     (unwind-protect
-        (mapcar
-         (lambda (row)
-           (pcase-let* ((`(,domain ,name ,value ,expiry) row))
-             `(,domain
-               ,(format "%s=%s" name value)
-               ,expiry)))
-         (sqlite-select
-          db
-          (concat
-           "SELECT host, name, value, expiry FROM moz_cookies "
-           "WHERE name = 'overleaf_session2' OR name = 'overleaf.sid'")))
+        (cl-some
+         (lambda (domain)
+           (when-let*
+               ((rows
+                 (sqlite-select
+                  db
+                  (concat
+                   "SELECT host, name, value, expiry FROM moz_cookies "
+                   "WHERE (name = 'overleaf_session2' OR name = 'overleaf.sid') "
+                   "AND (host = ? OR host = '.' || ?)")
+                  (list domain domain))))
+             (mapcar
+              (lambda (row)
+                (pcase-let* ((`(,host ,name ,value ,expiry) row))
+                  `(,host
+                    ,(format "%s=%s" name value)
+                    ,expiry)))
+              rows)))
+         (overleaf--cookie-domains))
       (sqlite-close db))))
 
 ;;;###autoload
@@ -485,22 +495,25 @@ The context window size is configured using `overleaf-context-size'."
 (defun overleaf--get-cookies ()
   "Load the cookies from `overleaf-cookies'."
   (if-let*
-      ((cookies
-        (cl-some (lambda (prefix)
-                   (alist-get (concat prefix (overleaf--cookie-domain))
-                              (overleaf--get-full-cookies)
-                              nil nil #'string=))
-                 '("." "")))
+      ((cookie-domains (overleaf--cookie-domains))
+       (cookies
+        (cl-some (lambda (cookie-domain)
+                   (cl-some (lambda (prefix)
+                              (alist-get (concat prefix cookie-domain)
+                                         (overleaf--get-full-cookies)
+                                         nil nil #'string=))
+                            '("." "")))
+                 cookie-domains))
        (now (time-convert nil 'integer))) ; Current unix time in seconds.
       (pcase-let ((`(,value ,validity) cookies))
         (if (or (not validity) (< now validity))
             value
           (setq overleaf--current-cookies nil)
           (user-error "Cookies for %s are expired.  Please refresh them using `overleaf-authenticate' or manually"
-                      (overleaf--cookie-domain))))
+                      (car cookie-domains))))
     (setq overleaf--current-cookies nil)
     (user-error "Cookies for %s are not set.  Please set them using `overleaf-authenticate' or manually"
-                (overleaf--cookie-domain))))
+                (car (overleaf--cookie-domains)))))
 
 (defun overleaf--connected-p ()
   "Return t if the buffer is connected to overleaf."
@@ -1048,11 +1061,14 @@ If unique is t the element with key VERS will be overwritten."
   "Return a sanitized version of the url without trailing slash."
   (string-trim (string-trim (or overleaf-url overleaf-default-url)) "" "/"))
 
-(defun overleaf--cookie-domain ()
-  "Return the domain for which the cookies will be valid.
+(defun overleaf--cookie-domains ()
+  "Return the domains for which the cookies will be valid.
 The value is computed from the current value of `overleaf-url'."
   (let ((domain-parts (string-split (replace-regexp-in-string ".*?://" "" (overleaf--url)) "\\.")))
-    (string-join (last domain-parts 2) ".")))
+    (mapcar (lambda (num-parts)
+              (string-join (last domain-parts num-parts) ".")
+              )
+            (reverse (number-sequence 2 (length domain-parts))))))
 
 (defun overleaf--decode-utf8 (string)
   "Decode the weird overleaf utf8 decoding in STRING."
@@ -1125,15 +1141,16 @@ The element is then bound to ELEMENT-SYM and the BODY is executed."
 
 (defun overleaf--webdriver-set-cookies (session)
   "Set the cookies in the webdriver session SESSION."
-  (let ((cookie-domain (overleaf--cookie-domain))
+  (let ((cookie-domains (overleaf--cookie-domains))
         (cookies (overleaf--get-cookies)))
     (when cookies
       (dolist (cookie (string-split cookies ";"))
         (pcase-let ((`(,name ,value) (string-split cookie "=")))
-          (webdriver-add-cookie
-           session
-           `(:name ,(string-trim name) :value ,(string-trim value) :domain
-                   ,cookie-domain)))))))
+          (dolist (cookie-domain cookie-domains)
+            (webdriver-add-cookie
+             session
+             `(:name ,(string-trim name) :value ,(string-trim value) :domain
+                     ,cookie-domain))))))))
 
 
 ;;;; Change Detection
@@ -1642,7 +1659,7 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
              (webdriver-goto-url session (concat (overleaf--url) first-project-path))
              (let ((cookies
                     (webdriver-get-all-cookies session)))
-               (setf (alist-get (overleaf--cookie-domain) full-cookies nil nil #'string=)
+               (setf (alist-get (car (overleaf--cookie-domains)) full-cookies nil nil #'string=)
                      (list
                       (substring (apply #'concat
                                         (mapcar (lambda (cookie)
