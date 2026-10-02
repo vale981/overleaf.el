@@ -20,5 +20,4 @@ data
 
 /overleaf-server
 .nixbox
-*.md
 /scratch
