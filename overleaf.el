@@ -633,11 +633,19 @@ The context window size is configured using `overleaf-context-size'."
               ;; declined or missed prompt would lose the local edits for good.
               (overleaf--save-local-backup local-text)
               (overleaf--message "Local changes differ from server, backed up to %s" (overleaf--local-backup-file)))
+            ;; The buffer is about to be torn down and rebuilt from
+            ;; SERVER-TEXT, which makes any undo history recorded so far
+            ;; meaningless (its entries reference positions in a buffer
+            ;; that's about to stop existing).  Clear it *before* the
+            ;; reset rather than after, so that if AUTO-REPLAY below
+            ;; re-records the user's own pending edits, that fresh,
+            ;; position-accurate entry survives and stays undoable.
+            (setq buffer-undo-list nil)
             (overleaf--reset-buffer-to server-text)
             (setq-local overleaf--last-good-state server-text)
             (cond
              (auto-replay
-              (setq-local overleaf--edit-queue (overleaf--apply-changes-internal overleaf--reconnect-pending-ops))
+              (setq-local overleaf--edit-queue (overleaf--apply-changes-internal overleaf--reconnect-pending-ops :record-undo))
               (overleaf--message "Reconnected; replaying %d pending edit(s)" (length overleaf--edit-queue)))
              ((not (string= local-text server-text))
               (run-with-timer
@@ -647,7 +655,6 @@ The context window size is configured using `overleaf-context-size'."
             (setq-local overleaf--reconnect-pending-ops nil)
             (setq-local overleaf--reconnect-base-text nil))
 
-          (setq buffer-undo-list nil)
           (overleaf--set-version version)
           (overleaf--push-to-history version)
           (when overleaf--edit-queue
@@ -817,23 +824,47 @@ overleaf version history."
           "5:::{\"name\":\"clientTracking.updatePosition\",\"args\":[{\"row\":%i,\"column\":%i,\"doc_id\":\"%s\"}]}"
           (1- (line-number-at-pos)) (- (point) (line-beginning-position)) overleaf-document-id))))))
 
-(defun overleaf--apply-changes-internal (edits)
+(defun overleaf--maybe-discard-own-undo-entry (record-undo)
+  "Discard the undo entry just pushed for the current op, unless RECORD-UNDO.
+No-op if undo recording is disabled for the buffer (`buffer-undo-list'
+is t), which would otherwise make this error."
+  (unless (or record-undo (eq buffer-undo-list t))
+    (setq buffer-undo-list (memq nil buffer-undo-list))))
+
+(defun overleaf--apply-changes-internal (edits &optional record-undo)
   "Parse the edit list EDITS and apply them to the buffer.
 
 Returns the edits as applied.  This is required because deletions might
 no longer be possible, or will occur at a different location.  If CONTEXT
-is provided use the context to fine tune where the edit is applied."
+is provided use the context to fine tune where the edit is applied.
+
+Unless RECORD-UNDO is non-nil, undo entries for EDITS are discarded:
+EDITS then represents a remote change the user never made, and
+leaving it in the undo history would mean `undo' could do something
+the user didn't ask for.  Pass RECORD-UNDO when EDITS are instead a
+replay of the user's own not-yet-sent edits (e.g. after a reconnect or
+a local-queue rewind), so those remain undoable.
+
+Signals an error if an op's position is out of range, or if a
+deletion's target text can no longer be found anywhere in the buffer
+even via the fuzzy fallback -- in both cases our model of the document
+has desynced from its actual contents, and continuing to apply further
+ops (whose positions assume this one succeeded) would silently
+corrupt the buffer rather than surface the problem."
   (let ((overleaf--is-overleaf-change t)
         (new-edits nil))
     (save-restriction
       (widen)
       (dolist (op edits)
         (let ((pos (1+ (plist-get op :p))))
+          (unless (<= 1 pos (1+ (buffer-size)))
+            (error "Overleaf: edit position %d out of range (buffer size %d)"
+                   (plist-get op :p) (buffer-size)))
           (goto-char pos)
           (if-let* ((insert (plist-get op :i)))
               (progn
                 (insert insert)
-                (setq buffer-undo-list (memq nil buffer-undo-list))
+                (overleaf--maybe-discard-own-undo-entry record-undo)
                 (push `(:p ,(1- pos) :i ,insert) new-edits))
 
             (if-let* ((delete (plist-get op :d)))
@@ -842,7 +873,7 @@ is provided use the context to fine tune where the edit is applied."
                            (string= (buffer-substring-no-properties pos (+ pos len)) delete))
                       (progn
                         (delete-region pos (+ pos len))
-                        (setq buffer-undo-list (memq nil buffer-undo-list))
+                        (overleaf--maybe-discard-own-undo-entry record-undo)
                         (push `(:p ,(1- pos) :d ,delete) new-edits))
                     (overleaf--debug "Fuzzy deletion fallback for '%s' at %d" delete pos)
                     (save-match-data
@@ -850,9 +881,9 @@ is provided use the context to fine tune where the edit is applied."
                           (progn
                             (let ((delete-loc (1- (- (point) (length delete)))))
                               (replace-match "")
-                              (setq buffer-undo-list (memq nil buffer-undo-list))
+                              (overleaf--maybe-discard-own-undo-entry record-undo)
                               (push `(:p ,delete-loc :d ,delete) new-edits)))
-                        (setq edits nil))))))))))
+                        (error "Overleaf: could not locate text to delete: %S" delete))))))))))
     (nreverse new-edits)))
 
 (defun overleaf--verify-buffer (hash)
@@ -945,57 +976,78 @@ them on top of the changes received from overleaf in the meantime."
         ;; can snap to the wrong spot when the text around point isn't
         ;; unique (e.g. repeated LaTeX boilerplate).
         (with-current-buffer overleaf--buffer
-          (let ((saved-point (point)))
-            (when overleaf--edit-queue
-              (overleaf--debug "-------------> RESET")
-              ;; Undo the (not-yet-rewound) local queue's effect on the
-              ;; point before rewinding the buffer to match.
-              (setq saved-point (overleaf--invert-point saved-point overleaf--edit-queue))
-              (overleaf--reset-buffer-to overleaf--buffer-before-edit-queue))
+          (let ((original-point (point)))
+            ;; Any failure while applying/replaying edits below means our
+            ;; model of the document has desynced from its real contents
+            ;; (see the errors `overleaf--apply-changes-internal' can
+            ;; signal) -- treat that like a hash mismatch: stop editing
+            ;; and reconnect to resync, rather than risk silently
+            ;; corrupting the buffer by pressing on with bookkeeping
+            ;; built on top of a partially-applied, inconsistent state.
+            (condition-case err
+                (let ((saved-point original-point))
+                  (when overleaf--edit-queue
+                    (overleaf--debug "-------------> RESET")
+                    ;; Undo the (not-yet-rewound) local queue's effect on
+                    ;; the point before rewinding the buffer to match.
+                    (setq saved-point (overleaf--invert-point saved-point overleaf--edit-queue))
+                    ;; The queue's own undo entries reference positions in
+                    ;; the buffer we're about to rewind out from under
+                    ;; them, so they'd silently corrupt the buffer if
+                    ;; later undone -- discard them; the replay below
+                    ;; (with undo recording on) puts back a fresh,
+                    ;; position-accurate entry instead.
+                    (setq buffer-undo-list nil)
+                    (overleaf--reset-buffer-to overleaf--buffer-before-edit-queue))
 
-            (when (and edits overleaf--edits-in-flight)
-              (let ((all-in-flight (cl-mapcan (lambda (u) (copy-sequence (overleaf--update-edits u)))
-                                              overleaf--edits-in-flight)))
-                (setq edits (overleaf--transform-edits edits all-in-flight))))
+                  (when (and edits overleaf--edits-in-flight)
+                    (let ((all-in-flight (cl-mapcan (lambda (u) (copy-sequence (overleaf--update-edits u)))
+                                                    overleaf--edits-in-flight)))
+                      (setq edits (overleaf--transform-edits edits all-in-flight))))
 
-            (let ((applied (overleaf--apply-changes-internal edits)))
-              (setq saved-point (overleaf--transform-point saved-point applied))
-              (overleaf--set-version version)
-              (when (and hash (not overleaf--edits-in-flight)) (overleaf--verify-buffer hash))
-              (overleaf--push-to-history version)
-              (overleaf--push-to-recent-updates
-               (make-overleaf--update
-                :edits edits
-                :from-version (1- version) ;; we updated it so that there's no jump
-                :to-version version
-                :buffer ""))
+                  (let ((applied (overleaf--apply-changes-internal edits)))
+                    (setq saved-point (overleaf--transform-point saved-point applied))
+                    (overleaf--set-version version)
+                    (when (and hash (not overleaf--edits-in-flight)) (overleaf--verify-buffer hash))
+                    (overleaf--push-to-history version)
+                    (overleaf--push-to-recent-updates
+                     (make-overleaf--update
+                      :edits edits
+                      :from-version (1- version) ;; we updated it so that there's no jump
+                      :to-version version
+                      :buffer ""))
 
-              (when overleaf--edits-in-flight
-                ;; Unlike `overleaf--edit-queue' below, in-flight edits were
-                ;; never undone from the buffer (only queued-but-unsent edits
-                ;; are rewound above) -- their text is already sitting in the
-                ;; buffer from when the user typed it, and EDITS was already
-                ;; transformed against it before being applied above.  So this
-                ;; only needs to update the recorded position for each pending
-                ;; update (for later bookkeeping/resends); re-applying it here
-                ;; too would insert its text a second time.
-                (overleaf--debug "updating in-flight edit positions")
-                (dolist (update overleaf--edits-in-flight)
-                  (setf (overleaf--update-edits update)
-                        (overleaf--transform-edits (overleaf--update-edits update) edits))
-                  (setf (overleaf--update-buffer update) (buffer-string))))
+                    (when overleaf--edits-in-flight
+                      ;; Unlike `overleaf--edit-queue' below, in-flight edits were
+                      ;; never undone from the buffer (only queued-but-unsent edits
+                      ;; are rewound above) -- their text is already sitting in the
+                      ;; buffer from when the user typed it, and EDITS was already
+                      ;; transformed against it before being applied above.  So this
+                      ;; only needs to update the recorded position for each pending
+                      ;; update (for later bookkeeping/resends); re-applying it here
+                      ;; too would insert its text a second time.
+                      (overleaf--debug "updating in-flight edit positions")
+                      (dolist (update overleaf--edits-in-flight)
+                        (setf (overleaf--update-edits update)
+                              (overleaf--transform-edits (overleaf--update-edits update) edits))
+                        (setf (overleaf--update-buffer update) (buffer-string))))
 
-              (if overleaf--edit-queue
-                  (progn
-                    (when edits
-                      (setq overleaf--edit-queue (overleaf--transform-edits overleaf--edit-queue edits)))
-                    (setq overleaf--buffer-before-edit-queue (buffer-string))
-                    (let ((replayed (overleaf--apply-changes-internal overleaf--edit-queue)))
-                      (setq overleaf--edit-queue replayed)
-                      (setq saved-point (overleaf--transform-point saved-point replayed))))
-                (overleaf--reset-edit-queue)))
+                    (if overleaf--edit-queue
+                        (progn
+                          (when edits
+                            (setq overleaf--edit-queue (overleaf--transform-edits overleaf--edit-queue edits)))
+                          (setq overleaf--buffer-before-edit-queue (buffer-string))
+                          (let ((replayed (overleaf--apply-changes-internal overleaf--edit-queue :record-undo)))
+                            (setq overleaf--edit-queue replayed)
+                            (setq saved-point (overleaf--transform-point saved-point replayed))))
+                      (overleaf--reset-edit-queue)))
 
-            (goto-char saved-point)))))
+                  (goto-char saved-point))
+              (error
+               (overleaf--warn "Could not apply update, buffer desynced: %s" (error-message-string err))
+               (goto-char (min original-point (point-max)))
+               (setq-local buffer-read-only t)
+               (overleaf-connect)))))))
 
     ;; Only a known-good baseline (nothing of ours outstanding) is safe to
     ;; replay pending edits against after a reconnect; see
@@ -1147,12 +1199,17 @@ Version: 2024-04-03"
     (list context-before context-after context)))
 
 (defun overleaf--reset-buffer-to (contents)
-  "Erase the buffer and insert CONTENTS while trying to keep the point position."
-  (overleaf--save-context
-   (save-restriction
-     (widen)
-     (erase-buffer)
-     (insert contents))))
+  "Erase the buffer and insert CONTENTS while trying to keep the point position.
+
+This is always a synthetic rebuild (never an edit the user actually
+made), so it's kept out of the undo history entirely -- callers that
+need the user's own edits to remain undoable record those separately."
+  (let ((buffer-undo-list t))
+    (overleaf--save-context
+     (save-restriction
+       (widen)
+       (erase-buffer)
+       (insert contents)))))
 
 ;;;; Webdriver
 (defmacro overleaf--with-webdriver (&rest body)
