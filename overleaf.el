@@ -888,6 +888,36 @@ Re-connect if this is not the case."
              edits))))
   edits)
 
+(defun overleaf--transform-point (pos edits)
+  "Transform the 1-indexed buffer position POS through EDITS.
+EDITS uses the same 0-indexed `:p' positions as `overleaf--transform-edits'."
+  (1+ (plist-get (car (overleaf--transform-edits (list (list :p (1- pos))) edits)) :p)))
+
+(defun overleaf--invert-point (pos edits)
+  "Map the 1-indexed buffer position POS backward through EDITS.
+EDITS is a sequence of ops in forward-application order (same convention
+as `overleaf--transform-edits'); this returns the position POS would have
+had before EDITS were applied, i.e. the inverse of `overleaf--transform-point'.
+A position that falls inside text that an op inserted (and would
+therefore no longer exist before that op) is clamped to that op's
+start, mirroring the clamping `overleaf--transform-edits' already does
+for deletions."
+  (let ((p (1- pos)))
+    (dolist (op (reverse edits))
+      (let ((hp (plist-get op :p))
+            (hi (plist-get op :i))
+            (hd (plist-get op :d)))
+        (setq p
+              (cond
+               (hi (let ((len (length hi)))
+                     (cond ((< p hp) p)
+                           ((< p (+ hp len)) hp)
+                           (t (- p len)))))
+               (hd (let ((len (length hd)))
+                     (if (<= p hp) p (+ p len))))
+               (t p)))))
+    (1+ p)))
+
 (defun overleaf--apply-changes (edits version last-version hash)
   "Apply change EDITS  from version LAST-VERSION to VERSION to have the hash HASH.
 
@@ -909,50 +939,63 @@ them on top of the changes received from overleaf in the meantime."
             (overleaf--set-version version)))
 
       (when edits
-        (overleaf--save-context
-         (with-current-buffer overleaf--buffer
-           (when overleaf--edit-queue
-             (overleaf--debug "-------------> RESET")
-             (overleaf--reset-buffer-to overleaf--buffer-before-edit-queue))
+        ;; Track the point exactly through every buffer mutation below
+        ;; (using the edits as *actually* applied, not just their nominal
+        ;; positions) instead of re-finding it via a text search, which
+        ;; can snap to the wrong spot when the text around point isn't
+        ;; unique (e.g. repeated LaTeX boilerplate).
+        (with-current-buffer overleaf--buffer
+          (let ((saved-point (point)))
+            (when overleaf--edit-queue
+              (overleaf--debug "-------------> RESET")
+              ;; Undo the (not-yet-rewound) local queue's effect on the
+              ;; point before rewinding the buffer to match.
+              (setq saved-point (overleaf--invert-point saved-point overleaf--edit-queue))
+              (overleaf--reset-buffer-to overleaf--buffer-before-edit-queue))
 
-           (when (and edits overleaf--edits-in-flight)
-             (let ((all-in-flight (cl-mapcan (lambda (u) (copy-sequence (overleaf--update-edits u)))
-                                             overleaf--edits-in-flight)))
-               (setq edits (overleaf--transform-edits edits all-in-flight))))
+            (when (and edits overleaf--edits-in-flight)
+              (let ((all-in-flight (cl-mapcan (lambda (u) (copy-sequence (overleaf--update-edits u)))
+                                              overleaf--edits-in-flight)))
+                (setq edits (overleaf--transform-edits edits all-in-flight))))
 
-           (overleaf--apply-changes-internal edits)
-           (overleaf--set-version version)
-           (when (and hash (not overleaf--edits-in-flight)) (overleaf--verify-buffer hash))
-           (overleaf--push-to-history version)
-           (overleaf--push-to-recent-updates
-            (make-overleaf--update
-             :edits edits
-             :from-version (1- version) ;; we updated it so that there's no jump
-             :to-version version
-             :buffer ""))
+            (let ((applied (overleaf--apply-changes-internal edits)))
+              (setq saved-point (overleaf--transform-point saved-point applied))
+              (overleaf--set-version version)
+              (when (and hash (not overleaf--edits-in-flight)) (overleaf--verify-buffer hash))
+              (overleaf--push-to-history version)
+              (overleaf--push-to-recent-updates
+               (make-overleaf--update
+                :edits edits
+                :from-version (1- version) ;; we updated it so that there's no jump
+                :to-version version
+                :buffer ""))
 
-           (when overleaf--edits-in-flight
-             ;; Unlike `overleaf--edit-queue' below, in-flight edits were
-             ;; never undone from the buffer (only queued-but-unsent edits
-             ;; are rewound above) -- their text is already sitting in the
-             ;; buffer from when the user typed it, and EDITS was already
-             ;; transformed against it before being applied above.  So this
-             ;; only needs to update the recorded position for each pending
-             ;; update (for later bookkeeping/resends); re-applying it here
-             ;; too would insert its text a second time.
-             (overleaf--debug "updating in-flight edit positions")
-             (dolist (update overleaf--edits-in-flight)
-               (setf (overleaf--update-edits update)
-                     (overleaf--transform-edits (overleaf--update-edits update) edits))
-               (setf (overleaf--update-buffer update) (buffer-string))))
+              (when overleaf--edits-in-flight
+                ;; Unlike `overleaf--edit-queue' below, in-flight edits were
+                ;; never undone from the buffer (only queued-but-unsent edits
+                ;; are rewound above) -- their text is already sitting in the
+                ;; buffer from when the user typed it, and EDITS was already
+                ;; transformed against it before being applied above.  So this
+                ;; only needs to update the recorded position for each pending
+                ;; update (for later bookkeeping/resends); re-applying it here
+                ;; too would insert its text a second time.
+                (overleaf--debug "updating in-flight edit positions")
+                (dolist (update overleaf--edits-in-flight)
+                  (setf (overleaf--update-edits update)
+                        (overleaf--transform-edits (overleaf--update-edits update) edits))
+                  (setf (overleaf--update-buffer update) (buffer-string))))
 
-           (if overleaf--edit-queue
-               (progn
-                 (when edits
-                   (setq overleaf--edit-queue (overleaf--transform-edits overleaf--edit-queue edits)))
-                 (setq overleaf--buffer-before-edit-queue (buffer-string))
-                 (setq overleaf--edit-queue (overleaf--apply-changes-internal overleaf--edit-queue)))
-             (overleaf--reset-edit-queue))))))
+              (if overleaf--edit-queue
+                  (progn
+                    (when edits
+                      (setq overleaf--edit-queue (overleaf--transform-edits overleaf--edit-queue edits)))
+                    (setq overleaf--buffer-before-edit-queue (buffer-string))
+                    (let ((replayed (overleaf--apply-changes-internal overleaf--edit-queue)))
+                      (setq overleaf--edit-queue replayed)
+                      (setq saved-point (overleaf--transform-point saved-point replayed))))
+                (overleaf--reset-edit-queue)))
+
+            (goto-char saved-point)))))
 
     ;; Only a known-good baseline (nothing of ours outstanding) is safe to
     ;; replay pending edits against after a reconnect; see
@@ -1993,7 +2036,11 @@ to the default tooltip text."
 
 - Add the mode line status to the current mode line string.
 - Turn off `inhibit-notification-hooks' as this prevents detecting changes
-  to sync to overleaf."
+  to sync to overleaf.
+- Make Emacs scroll the window the minimum amount necessary to keep
+  point visible after a remote edit, instead of recentering (which is
+  Emacs' default once point leaves the visible area, and looks like the
+  buffer jumping around even when point itself is tracked correctly)."
 
   (unless global-mode-string (setq global-mode-string '("")))
   (unless (memq 'overleaf--mode-line global-mode-string)
@@ -2002,7 +2049,8 @@ to the default tooltip text."
 
   (overleaf--update-modeline)
   (add-hook 'kill-buffer-hook #'overleaf-disconnect nil :local)
-  (setq inhibit-modification-hooks nil))
+  (setq inhibit-modification-hooks nil)
+  (setq-local scroll-conservatively 101))
 
 ;;;###autoload
 (make-obsolete-variable 'overleaf-keymap-prefix
@@ -2033,7 +2081,8 @@ Interactively with no argument, this command toggles the mode."
     (setq-local overleaf--mode-line "")
     (force-mode-line-update t)
     (overleaf-disconnect)
-    (remove-hook 'kill-buffer-hook #'overleaf-disconnect :local)))
+    (remove-hook 'kill-buffer-hook #'overleaf-disconnect :local)
+    (kill-local-variable 'scroll-conservatively)))
 
 
 
