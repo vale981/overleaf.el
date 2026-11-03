@@ -34,6 +34,7 @@
 
 (require 'webdriver)
 (require 'webdriver-firefox)
+(require 'webdriver-chrome)
 (require 'websocket)
 (require 'plz)
 (require 'posframe)
@@ -197,13 +198,16 @@ profile.  Otherwise prompt."
       (user-error "Sqlite not available!"))))
 
 (defvar overleaf-save-cookies (lambda (cookies)
-                                (setq overleaf-cookies cookies))
+                                (setq overleaf-cookies (read cookies)))
   "A function (lambda) that stores the session cookies.
-The function receives a string containing the session cookies and stores
-in a way that `overleaf-cookies' can access it.  The default
-implementation simply sets `overleaf-cookies' to the string value.
-Another possibility is to store them into a gpg encrypted file.  See
-`overleaf-save-cookies-to-file'.")
+The function receives a string containing the printed representation
+of the session cookies alist (see `overleaf--get-full-cookies') and
+stores it in a way that `overleaf-cookies' can access it.  The default
+implementation reads the string back into its Lisp value and sets
+`overleaf-cookies' to that.  Another possibility is to store the
+string into a gpg encrypted file.  See `overleaf-save-cookies-to-file'
+\(paired with `overleaf-read-cookies-from-file', which does the
+corresponding `read' when loading it back).")
 
 ;;;###autoload
 (defun overleaf-save-cookies-to-file (file)
@@ -232,6 +236,32 @@ To be used with `overleaf-save-cookies'."
 (defcustom overleaf-context-size 10
   "Standard context window size for finding where to re-apply an edit."
   :type 'integer)
+
+(defcustom overleaf-webdriver-browser 'firefox
+  "Which browser `overleaf-login-via-browser' drives via WebDriver.
+`firefox' requires `geckodriver' and `chrome' requires `chromedriver'
+to be installed and on `exec-path'."
+  :type '(choice (const :tag "Firefox (geckodriver)" firefox)
+                 (const :tag "Chrome/Chromium (chromedriver)" chrome)))
+
+(defcustom overleaf-webdriver-profile-directory 'default
+  "Directory of the persistent browser profile for `overleaf-login-via-browser'.
+`default' (the default) automatically uses (creating it on first use)
+a profile directory under `user-emacs-directory', specific to the
+current `overleaf-webdriver-browser' -- so logins, browser extensions
+\(e.g. a password manager\), and other browser state persist across
+invocations with no setup required.
+
+Set this to nil instead for a fresh, empty profile every login (no
+persistence), or to a directory of your own choosing to use that
+profile instead of the automatic one.
+
+Either way, this must be a profile dedicated to this purpose, not the
+one your regular browser is currently using -- Firefox and Chrome both
+refuse to run two instances against the same profile at once."
+  :type '(choice (const :tag "Automatic, persistent profile (default)" default)
+                 (const :tag "Fresh profile every time" nil)
+                 directory))
 
 (defcustom overleaf-cache-cookies t
   "Whether to cache the cookies after obtaining them.
@@ -509,10 +539,10 @@ The context window size is configured using `overleaf-context-size'."
         (if (or (not validity) (< now validity))
             value
           (setq overleaf--current-cookies nil)
-          (user-error "Cookies for %s are expired.  Please refresh them using `overleaf-authenticate' or manually"
+          (user-error "Cookies for %s are expired.  Please refresh them using `overleaf-login' or manually"
                       (car cookie-domains))))
     (setq overleaf--current-cookies nil)
-    (user-error "Cookies for %s are not set.  Please set them using `overleaf-authenticate' or manually"
+    (user-error "Cookies for %s are not set.  Please set them using `overleaf-login' or manually"
                 (car (overleaf--cookie-domains)))))
 
 (defun overleaf--connected-p ()
@@ -1212,31 +1242,79 @@ need the user's own edits to remain undoable record those separately."
        (insert contents)))))
 
 ;;;; Webdriver
-(defmacro overleaf--with-webdriver (&rest body)
-  "Execute BODY if geckodriver is found and show an error message otherwise."
-  `(if (not (executable-find "geckodriver"))
-       (message-box "Please install geckodriver or set the cookies / document and project id manually.")
-     ,@body))
+(defun overleaf--webdriver-service-class ()
+  "Return the `webdriver-service' subclass for `overleaf-webdriver-browser'."
+  (pcase overleaf-webdriver-browser
+    ('firefox 'webdriver-service-firefox)
+    ('chrome 'webdriver-service-chrome)
+    (type (user-error "Unknown `overleaf-webdriver-browser': %s" type))))
 
-(cl-defmacro overleaf--webdriver-wait-until-appears
-    ((session xpath &optional (element-sym '_unused) (delay .1)) &rest body)
-  "Wait until an element matching XPATH is found in SESSION.
-The element is then bound to ELEMENT-SYM and the BODY is executed."
-  (let ((not-found (gensym))
-        (sel-var (gensym)))
-    `(let ((,sel-var
-            (make-instance 'webdriver-by
-                           :strategy "xpath"
-                           :selector ,xpath))
-           (,not-found t))
-       (while ,not-found
-         (condition-case nil
-             (let ((,element-sym
-                    (webdriver-find-element ,session ,sel-var)))
-               (setq ,not-found nil)
-               ,@body)
-           (webdriver-error
-            (sleep-for ,delay)))))))
+(defun overleaf--webdriver-executable ()
+  "Return the driver executable name for `overleaf-webdriver-browser'."
+  (pcase overleaf-webdriver-browser
+    ('firefox "geckodriver")
+    ('chrome "chromedriver")
+    (type (user-error "Unknown `overleaf-webdriver-browser': %s" type))))
+
+(defun overleaf--webdriver-make-service ()
+  "Create and start a WebDriver service for `overleaf-webdriver-browser'."
+  (let ((service (make-instance (overleaf--webdriver-service-class))))
+    (webdriver-service-start service)
+    service))
+
+(defun overleaf--webdriver-default-profile-directory ()
+  "Return the automatic, `overleaf-webdriver-browser'-specific profile directory."
+  (expand-file-name (format "overleaf-webdriver-profile-%s" overleaf-webdriver-browser)
+                    user-emacs-directory))
+
+(defun overleaf--webdriver-make-capabilities ()
+  "Return WebDriver capabilities for `overleaf-webdriver-profile-directory'.
+Return nil (meaning \"use a fresh profile\") only when that variable is
+explicitly nil."
+  (when overleaf-webdriver-profile-directory
+    (let ((dir (expand-file-name
+                (if (eq overleaf-webdriver-profile-directory 'default)
+                    (overleaf--webdriver-default-profile-directory)
+                  overleaf-webdriver-profile-directory))))
+      (make-directory dir t)
+      (pcase overleaf-webdriver-browser
+        ('firefox
+         (let ((caps (make-instance 'webdriver-capabilities-firefox)))
+           (webdriver-capabilities-firefox-add-args caps (list "-profile" dir) t)
+           caps))
+        ('chrome
+         (let ((caps (make-instance 'webdriver-capabilities-chrome)))
+           (webdriver-capabilities-add caps :goog:chromeOptions
+                                       (list :args (vector (concat "--user-data-dir=" dir)))
+                                       t)
+           caps))
+        (type (user-error "Unknown `overleaf-webdriver-browser': %s" type))))))
+
+(defmacro overleaf--with-webdriver (&rest body)
+  "Execute BODY if the driver for `overleaf-webdriver-browser' is found."
+  `(let ((driver (overleaf--webdriver-executable)))
+     (if (not (executable-find driver))
+         (message-box "Please install %s (for %s) or set the cookies / document and project id manually."
+                      driver overleaf-webdriver-browser)
+       ,@body)))
+
+(defmacro overleaf--webdriver-wait-until (timeout &rest body)
+  "Poll BODY until it returns non-nil.
+Retries on `webdriver-error' (e.g. while a page is still navigating).
+Signals an error after TIMEOUT seconds instead of blocking forever, so
+a caller's `unwind-protect' can still clean up the browser instead of
+leaving it stuck open.  Returns BODY's value."
+  (let ((deadline (gensym))
+        (result (gensym))
+        (delay .2))
+    `(let ((,deadline (+ (float-time) ,timeout))
+           (,result nil))
+       (while (not ,result)
+         (when (> (float-time) ,deadline)
+           (error "Timed out after %s seconds waiting for login to complete" ,timeout))
+         (setq ,result (condition-case nil (progn ,@body) (webdriver-error nil)))
+         (unless ,result (sleep-for ,delay)))
+       ,result)))
 
 
 (defun overleaf--webdriver-set-cookies (session)
@@ -1719,19 +1797,26 @@ See variable `overleaf-user-info-template' for customization."
 
 
 ;;;###autoload
-(defun overleaf-authenticate (url)
-  "Use selenium webdriver to log into overleaf URL and obtain the cookies.
-After running this command, wait for the browser-window to pop up and
-for the login page to load.  Note that if the cookies are still valid,
-the login page may not be shown and this command terminates without user input.
+(defun overleaf-login-via-browser (url)
+  "Log into overleaf URL by driving a real browser via WebDriver.
+This is `overleaf-login's fallback for sites that need something a
+plain HTTP request can't do, such as solving a CAPTCHA, SSO, or
+two-factor authentication: you complete the login yourself in the
+browser window that pops up, and this obtains the resulting cookies.
 
-Requires `geckodriver' (see
-https://github.com/mozilla/geckodriver/releases) to be installed."
+After running this command, wait for the browser window to pop up and
+for the login page to load.  Note that if the cookies are still valid,
+the login page may not be shown and this command terminates without
+user input.  Gives up (closing the browser) after 5 minutes if you
+never navigate away from the login page, e.g. because you didn't
+finish logging in.
+
+Drives Firefox (via `geckodriver') or Chrome/Chromium (via
+`chromedriver'), per `overleaf-webdriver-browser'; the corresponding
+driver must be installed and on `exec-path'."
   (interactive
    (list
     (read-string "Overleaf URL: " (overleaf--url))))
-
-  (message-box "Log in to overleaf and wait until the browser window closes.")
 
   (overleaf--with-webdriver
    (unless (and (boundp 'overleaf-cookies)
@@ -1739,37 +1824,132 @@ https://github.com/mozilla/geckodriver/releases) to be installed."
      (user-error "Both overleaf-cookies and overleaf-save-cookies need to be set"))
 
    (setq-local overleaf-url url)
-   (let ((session (make-instance 'webdriver-session)))
+   (let ((session (make-instance 'webdriver-session
+                                 :service (overleaf--webdriver-make-service)
+                                 :requested-capabilities (overleaf--webdriver-make-capabilities))))
      (unwind-protect
          (let ((full-cookies (overleaf--get-full-cookies)))
            (webdriver-session-start session)
            (webdriver-goto-url session (concat (overleaf--url) "/login"))
-           (overleaf--message "Log in now...")
+           (overleaf--message "Log in to overleaf in the browser window that just opened...")
 
-           (overleaf--webdriver-wait-until-appears
-            (session "//button[@id='new-project-button-sidebar']"))
+           ;; Waiting for a specific dashboard element (e.g. a "new
+           ;; project" button) is brittle across Overleaf UI versions
+           ;; and layouts (and wrongly never fires if the element isn't
+           ;; there, even after a successful login) -- navigating away
+           ;; from /login is what actually, reliably means "logged in",
+           ;; regardless of SSO, 2FA, or where login redirects to.
+           (overleaf--webdriver-wait-until 300
+             (not (string-match-p "/login" (webdriver-get-current-url session))))
 
-           (let* ((first-project
-                   (webdriver-find-element
-                    session
-                    (make-instance 'webdriver-by
-                                   :strategy "xpath"
-                                   :selector "//tr/td/a")))
-                  (first-project-path (webdriver-get-element-attribute session first-project "href")))
-             (webdriver-goto-url session (concat (overleaf--url) first-project-path))
-             (let ((cookies
-                    (webdriver-get-all-cookies session)))
-               (setf (alist-get (car (overleaf--cookie-domains)) full-cookies nil nil #'string=)
-                     (list
-                      (substring (apply #'concat
-                                        (mapcar (lambda (cookie)
-                                                  (format "%s=%s; " (alist-get 'name cookie) (alist-get 'value cookie)))
-                                                cookies))
-                                 0 -2)
-                      (alist-get 'expiry (aref cookies 0))))
-               (funcall overleaf-save-cookies
-                        (prin1-to-string full-cookies)))))
-       (webdriver-session-stop session)))))
+           ;; The session cookie is set as soon as login completes --
+           ;; no need to navigate into a project (which also assumed at
+           ;; least one existed).
+           (let ((cookies (webdriver-get-all-cookies session)))
+             (setf (alist-get (car (overleaf--cookie-domains)) full-cookies nil nil #'string=)
+                   (list
+                    (substring (apply #'concat
+                                      (mapcar (lambda (cookie)
+                                                (format "%s=%s; " (alist-get 'name cookie) (alist-get 'value cookie)))
+                                              cookies))
+                               0 -2)
+                    (alist-get 'expiry (aref cookies 0))))
+             (funcall overleaf-save-cookies
+                      (prin1-to-string full-cookies))
+             (overleaf--message "Logged in, cookies saved.")))
+       ;; `webdriver-session-stop' only force-kills the geckodriver
+       ;; process (which takes the browser window down with it) *after*
+       ;; its own graceful "end session" request succeeds; if that
+       ;; request fails for any reason the browser is left orphaned
+       ;; with nothing left to clean it up.  Killing the process
+       ;; directly is idempotent, so it's safe to also do unconditionally
+       ;; here regardless of how the graceful shutdown went.
+       (ignore-errors (webdriver-session-stop session))
+       (ignore-errors (webdriver-service-stop (oref session service)))))))
+
+;;;###autoload
+(define-obsolete-function-alias 'overleaf-authenticate
+  'overleaf-login-via-browser "1.1.9")
+
+(defun overleaf--parse-session-cookie (response)
+  "Extract the overleaf session cookie from a plz RESPONSE's headers.
+Returns (NAME-VALUE . EXPIRY), where EXPIRY is a Unix timestamp
+integer, or nil (meaning no expiry was given) -- or nil altogether if
+RESPONSE didn't set a session cookie."
+  (when-let* ((set-cookie (alist-get 'set-cookie (plz-response-headers response)))
+              ((string-match "\\(overleaf\\.sid\\|overleaf_session2\\)=[^;]*" set-cookie)))
+    (cons (match-string 0 set-cookie)
+          (when (string-match "Expires=\\([^;]+\\)" set-cookie)
+            (time-convert (date-to-time (match-string 1 set-cookie)) 'integer)))))
+
+;;;###autoload
+(defun overleaf-login (url)
+  "Log into overleaf URL via a direct HTTP request, without a browser.
+
+Prompts for an email and password, reads the CSRF token off the login
+page, POSTs the credentials to establish a session and stores the
+resulting cookie via `overleaf-save-cookies' (which must be set).
+
+This works directly for self-hosted Overleaf instances, whose login
+form is a plain POST.  The public overleaf.com site requires solving a
+reCAPTCHA challenge on login, which can't be done over a plain HTTP
+request; when that's detected, this offers to fall back to
+`overleaf-login-via-browser' (which drives a real, visible browser via
+`geckodriver', letting you solve the challenge there) instead."
+  (interactive
+   (list
+    (read-string "Overleaf URL: " (overleaf--url))))
+  (unless (and (boundp 'overleaf-cookies)
+               (boundp 'overleaf-save-cookies) overleaf-save-cookies)
+    (user-error "Variable `overleaf-save-cookies' needs to be set"))
+
+  (setq-local overleaf-url url)
+  (let* ((login-url (concat (overleaf--url) "/login"))
+         (email (read-string "Email: "))
+         (password (read-passwd "Password: ")))
+    (unwind-protect
+        (let* ((login-page-response (plz 'get login-url :as 'response))
+               (login-page (plz-response-body login-page-response))
+               (csrf-token
+                (if (string-match "name=\"ol-csrfToken\" content=\"\\([^\"]+\\)\"" login-page)
+                    (match-string 1 login-page)
+                  (error "Could not find a CSRF token on the login page")))
+               (session-cookie (car (overleaf--parse-session-cookie login-page-response)))
+               (response
+                (plz 'post login-url
+                  :as 'response
+                  :headers `(("Content-Type" . "application/x-www-form-urlencoded")
+                             ("Accept" . "application/json")
+                             ("Cookie" . ,session-cookie))
+                  :body (mapconcat
+                         (lambda (field)
+                           (concat (url-hexify-string (car field)) "="
+                                   (url-hexify-string (cdr field))))
+                         `(("_csrf" . ,csrf-token)
+                           ("email" . ,email)
+                           ("password" . ,password))
+                         "&"))))
+          (if (<= 200 (plz-response-status response) 299)
+              (pcase-let ((`(,new-cookie . ,expiry)
+                           (or (overleaf--parse-session-cookie response)
+                               (cons session-cookie nil)))
+                          (full-cookies (overleaf--get-full-cookies)))
+                (setf (alist-get (car (overleaf--cookie-domains)) full-cookies nil nil #'string=)
+                      (list new-cookie expiry))
+                (funcall overleaf-save-cookies (prin1-to-string full-cookies))
+                (overleaf--message "Logged in as %s" email))
+            (let ((err (ignore-errors
+                         (json-parse-string (plz-response-body response)
+                                             :object-type 'plist :array-type 'list))))
+              (if (and err (equal (plist-get err :errorReason) "cannot_verify_user_not_robot"))
+                  (if (y-or-n-p "This instance requires solving a CAPTCHA; open a browser to log in instead? ")
+                      (overleaf-login-via-browser (overleaf--url))
+                    (user-error "Login requires solving a CAPTCHA; use `overleaf-login-via-browser' instead"))
+                (user-error "Login failed: %s"
+                            (or (and err (overleaf--pget err :message :key))
+                                (and err (overleaf--pget err :message :text))
+                                (plz-response-body response)))))))
+      (setq password nil))))
 
 ;;;###autoload
 (defun overleaf-find-file (url)

@@ -40,13 +40,46 @@ load path and `(require 'overleaf)`. You can also use
 ## Setting Up
 ### Getting the Session Cookies
 First, there are the session cookies which can be obtained either
-through executing the command `M-x overleaf-authenticate`, reading the
-Firefox cookie database or through the developer tools in your
-favorite browser.
+through executing the command `M-x overleaf-login` or `M-x
+overleaf-login-via-browser`, reading the Firefox cookie database or
+through the developer tools in your favorite browser.
 
-#### `overleaf-authenticate`
-For the former option the [Mozilla gecko driver](https://github.com/mozilla/geckodriver) must be installed and
-the variable `overleaf-save-cookies` must be set to a function that
+#### `overleaf-login`
+The simplest option, provided the Overleaf instance you're using
+doesn't have bot-protection on its login form: `M-x overleaf-login`
+logs in directly over HTTP (no browser or `geckodriver` required),
+prompting for your email and password. The variable
+`overleaf-save-cookies` must be set, same as for
+`overleaf-login-via-browser` below.
+
+This works for self-hosted Overleaf instances, whose login form is
+typically a plain POST. The public overleaf.com site requires solving
+a reCAPTCHA challenge on login, which can't be done over a plain HTTP
+request; when `overleaf-login` detects that, it offers to fall back to
+`overleaf-login-via-browser` for you.
+
+#### `overleaf-login-via-browser`
+This drives a real, visible browser via WebDriver so you can complete
+login yourself, including anything `overleaf-login` can't handle on
+its own: a CAPTCHA, SSO, or two-factor authentication.
+
+It can drive either Firefox (via [geckodriver](https://github.com/mozilla/geckodriver), the default) or Chrome/Chromium
+(via `chromedriver`); set `overleaf-webdriver-browser` to `chrome` to
+use the latter. Either way, the corresponding driver must be installed
+and on your `exec-path`.
+
+By default, logins reuse a profile created automatically under
+`user-emacs-directory` (one per browser, so switching
+`overleaf-webdriver-browser` doesn't mix the two), so browser
+extensions you install there -- e.g. a password manager -- stay
+installed and signed in across invocations with no setup. Set
+`overleaf-webdriver-profile-directory` to nil instead for a fresh,
+empty profile every time, or to a directory of your own choosing.
+Either way, this must be a profile dedicated to this purpose, not the
+one your regular browser is currently using -- Firefox and Chrome both
+refuse to run two instances against the same profile at once.
+
+The variable `overleaf-save-cookies` must be set to a function that
 receives a string containing the cookies and saving it either directly
 into `overleaf-cookies` via `setq` (that's the default) or stores it by
 some other means. In the latter case the variable `overleaf-cookies`
@@ -60,6 +93,10 @@ file:
       (setq overleaf-cookies
             (overleaf-read-cookies-from-file cookie-file)))
 ```
+
+`overleaf-authenticate` is kept as an obsolete alias for
+`overleaf-login-via-browser`, for anyone with it bound to a key or
+referenced elsewhere.
 
 #### Firefox
 Locate your Firefox profile folder and set:
