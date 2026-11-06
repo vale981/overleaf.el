@@ -40,6 +40,7 @@
 (require 'posframe)
 (require 'xref)
 (require 'ediff)
+(require 'diff)
 
 (defvar ediff-buffer-A)
 (defvar ediff-buffer-B)
@@ -604,33 +605,95 @@ The context window size is configured using `overleaf-context-size'."
               (setq overleaf--websocket nil)
               (overleaf-connect))))))))
 
-(defun overleaf--sync-surgically (source-buf target-buf)
-  "Surgically sync TARGET-BUF to SOURCE-BUF using hunk-by-hunk application."
+(defun overleaf--diff-hunks (old-buf new-buf)
+  "Return the line hunks turning OLD-BUF into NEW-BUF.
+Each hunk is a list (OLD-START OLD-COUNT NEW-START NEW-COUNT) as in a
+unified diff header, in ascending order.  As in unified diffs, a START
+whose COUNT is 0 names the line *before* the (empty) range."
+  (let ((old-file (make-temp-file "overleaf-old"))
+        (new-file (make-temp-file "overleaf-new"))
+        (coding-system-for-write 'utf-8-unix)
+        (hunks nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer old-buf
+            (save-restriction (widen) (write-region nil nil old-file nil 'silent)))
+          (with-current-buffer new-buf
+            (save-restriction (widen) (write-region nil nil new-file nil 'silent)))
+          (with-temp-buffer
+            (let ((status (call-process diff-command nil t nil
+                                        "-U0" "-a" old-file new-file)))
+              (unless (memq status '(0 1))
+                (error "Overleaf: diff failed (exit %s): %s" status (buffer-string))))
+            (goto-char (point-min))
+            (while (re-search-forward
+                    "^@@ -\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? \\+\\([0-9]+\\)\\(?:,\\([0-9]+\\)\\)? @@"
+                    nil t)
+              (push (list (string-to-number (match-string 1))
+                          (if (match-string 2) (string-to-number (match-string 2)) 1)
+                          (string-to-number (match-string 3))
+                          (if (match-string 4) (string-to-number (match-string 4)) 1))
+                    hunks))))
+      (delete-file old-file)
+      (delete-file new-file))
+    (nreverse hunks)))
+
+(defun overleaf--line-range (start count)
+  "Return (BEG . END) for COUNT lines from unified-diff line START in current buffer."
   (save-excursion
-    (save-window-excursion
-      (let ((diff-buf (let ((inhibit-message t))
-                        (diff-no-select target-buf source-buf "-u -U0" t))))
-        (when (buffer-live-p diff-buf)
-          (unwind-protect
-              (with-current-buffer diff-buf
-                (goto-char (point-min))
-                (while (re-search-forward "^@@" nil t)
-                  (beginning-of-line)
-                  (let ((diff-jump-to-old-file t)
-                        (inhibit-read-only t)
-                        (inhibit-message t))
-                    (cl-letf* (((symbol-function 'diff-find-file-definition)
-                                (lambda (&rest _) target-buf))
-                               ((symbol-function 'read-file-name)
-                                (lambda (&rest _) (buffer-name target-buf)))
-                               ((symbol-function 'completing-read)
-                                (lambda (&rest _) (buffer-name target-buf))))
-                      (diff-apply-hunk)))))
-            (kill-buffer diff-buf)))))))
+    (goto-char (point-min))
+    ;; With COUNT = 0, START is the line preceding the empty range.
+    (forward-line (if (zerop count) start (1- start)))
+    (let ((beg (point)))
+      (forward-line count)
+      (cons beg (point)))))
+
+(defun overleaf--sync-surgically (source-buf target-buf)
+  "Make TARGET-BUF's text equal to SOURCE-BUF's with minimal line edits.
+Hunks are applied bottom-up straight from the diff's line numbers, so
+earlier hunks never shift later ones and no fuzzy text search is
+needed.  Each hunk is an ordinary delete+insert in TARGET-BUF, so the
+usual change hooks turn it into Overleaf OT operations."
+  (let ((hunks (overleaf--diff-hunks target-buf source-buf)))
+    (with-current-buffer target-buf
+      (save-excursion
+        (save-restriction
+          (widen)
+          (let ((inhibit-read-only t))
+            (dolist (hunk (reverse hunks))
+              (pcase-let* ((`(,old-start ,old-count ,new-start ,new-count) hunk)
+                           (`(,beg . ,end) (overleaf--line-range old-start old-count))
+                           (new-text
+                            (with-current-buffer source-buf
+                              (save-restriction
+                                (widen)
+                                (pcase-let ((`(,b . ,e) (overleaf--line-range new-start new-count)))
+                                  (buffer-substring-no-properties b e))))))
+                (unless (string= new-text (buffer-substring-no-properties beg end))
+                  (goto-char beg)
+                  (delete-region beg end)
+                  (insert new-text))))))))
+    ;; Safety net: should never trigger, but never leave the buffers silently out of sync.
+    (unless (string= (with-current-buffer source-buf
+                       (save-restriction (widen) (buffer-substring-no-properties (point-min) (point-max))))
+                     (with-current-buffer target-buf
+                       (save-restriction (widen) (buffer-substring-no-properties (point-min) (point-max)))))
+      (overleaf--message "Warning: merge result could not be synced exactly to the Overleaf buffer"))))
 
 (defun overleaf--handle-pong (ws)
   "Respond to a heart-beat message from WS."
   (websocket-send-text ws "2::"))
+
+;; Check without side effects whether OPS replay cleanly onto BASE-TEXT.
+(defun overleaf--replay-reproduces-p (base-text ops expected-text)
+  "Return non-nil if applying OPS to BASE-TEXT succeeds and yields EXPECTED-TEXT."
+  (condition-case nil
+      (with-temp-buffer
+        (insert base-text)
+        (overleaf--apply-changes-internal (mapcar #'copy-sequence ops))
+        (string= (buffer-substring-no-properties (point-min) (point-max))
+                 expected-text))
+    (error nil)))
 
 (defun overleaf--handle-initial-load (ws message)
   "Handle the initial document load message (ID 6)."
@@ -653,9 +716,17 @@ The context window size is configured using `overleaf-context-size'."
                  ;; against `overleaf--reconnect-base-text', so replaying them
                  ;; on top of a server text that has since moved on would
                  ;; land at the wrong places.
+                 ;; Also require that replaying the ops onto the base text
+                 ;; actually reproduces LOCAL-TEXT: if the ops no longer apply
+                 ;; (our bookkeeping desynced) or don't account for every local
+                 ;; change (e.g. edits made while the socket was closed are
+                 ;; never queued), replaying would error out or silently drop
+                 ;; those edits -- use the backup + conflict path instead.
                  (auto-replay (and overleaf--reconnect-pending-ops
                                    overleaf--reconnect-base-text
-                                   (string= overleaf--reconnect-base-text server-text))))
+                                   (string= overleaf--reconnect-base-text server-text)
+                                   (overleaf--replay-reproduces-p
+                                    server-text overleaf--reconnect-pending-ops local-text))))
             (unless (or auto-replay (string= local-text server-text))
               ;; Back up unconditionally before the destructive reset below:
               ;; `overleaf--resolve-conflicts' only writes the backup once the
@@ -1999,6 +2070,8 @@ without this, edits still pending at the time of a forced reconnect
 recoverable via the manual ediff/backup path.  Paired with
 `overleaf--reconnect-base-text', `overleaf--handle-initial-load' uses
 this to replay the edits automatically when it is safe to do so."
+  ;; Include the edit still being coalesced (not yet in the queue).
+  (overleaf-queue-pending-edit (current-buffer))
   (setq-local overleaf--reconnect-base-text overleaf--last-good-state)
   (setq-local overleaf--reconnect-pending-ops
               (append
